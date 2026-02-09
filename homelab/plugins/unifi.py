@@ -1,4 +1,4 @@
-"""UniFi Network plugin — client lookup and device management."""
+"""UniFi Network plugin — client lookup, device management, bandwidth."""
 
 import http.cookiejar
 import json
@@ -8,7 +8,7 @@ import urllib.request
 
 from homelab.config import CFG
 from homelab.plugins import Plugin
-from homelab.ui import pick_option, scrollable_list, prompt_text, error, warn
+from homelab.ui import C, pick_option, scrollable_list, prompt_text, confirm, success, error, warn
 
 _HEADER_CACHE = {"timestamp": 0, "stats": ""}
 _CACHE_TTL = 300
@@ -58,6 +58,20 @@ def _api_get(opener, base, endpoint):
         return None
 
 
+def _api_post(opener, base, endpoint, data):
+    """Make an authenticated POST request."""
+    site = CFG.get("unifi_site", "default")
+    url = f"{base}/api/s/{site}/{endpoint}"
+    payload = json.dumps(data).encode()
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+    try:
+        with opener.open(req, timeout=10) as resp:
+            return json.loads(resp.read().decode())
+    except Exception as e:
+        error(f"UniFi API error: {e}")
+        return None
+
+
 class UnifiPlugin(Plugin):
     name = "UniFi"
     key = "unifi"
@@ -87,7 +101,10 @@ class UnifiPlugin(Plugin):
         return {
             "UniFi Clients": ("unifi_clients", _show_clients),
             "UniFi Devices": ("unifi_devices", _show_devices),
+            "UniFi Bandwidth": ("unifi_bandwidth", _bandwidth_stats),
             "UniFi Search": ("unifi_search", _search_client),
+            "UniFi Block/Unblock": ("unifi_block", _block_unblock_client),
+            "UniFi Restart Device": ("unifi_restart", _restart_device),
         }
 
 
@@ -107,16 +124,19 @@ def unifi_menu():
         idx = pick_option("UniFi:", [
             "Active Clients        — connected devices with IP, uptime, signal",
             "Network Devices       — APs, switches, gateways",
+            "Bandwidth             — client traffic sorted by usage",
             "Search Client         — find device by name or MAC",
+            "Block/Unblock Client  — restrict network access",
+            "Restart Device        — reboot an AP, switch, or gateway",
             "───────────────",
             "★ Add to Favorites   — pin an action to the main menu",
             "← Back",
         ])
-        if idx == 5:
+        if idx == 8:
             return
-        elif idx == 3:
+        elif idx == 6:
             continue
-        elif idx == 4:
+        elif idx == 7:
             from homelab.plugins import add_plugin_favorite
             add_plugin_favorite(UnifiPlugin())
         elif idx == 0:
@@ -124,7 +144,13 @@ def unifi_menu():
         elif idx == 1:
             _show_devices()
         elif idx == 2:
+            _bandwidth_stats()
+        elif idx == 3:
             _search_client()
+        elif idx == 4:
+            _block_unblock_client()
+        elif idx == 5:
+            _restart_device()
 
 
 def _format_uptime(seconds):
@@ -138,7 +164,134 @@ def _format_uptime(seconds):
     return f"{h}h {m}m"
 
 
+def _format_bytes(b):
+    """Format bytes as human-readable string."""
+    if not b:
+        return "0 B"
+    b = int(b)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if b < 1024:
+            return f"{b:.1f} {unit}" if b < 100 else f"{b:.0f} {unit}"
+        b /= 1024
+    return f"{b:.1f} PB"
+
+
 def _show_clients():
+    while True:
+        opener, base = _get_session()
+        if not opener:
+            return
+
+        data = _api_get(opener, base, "stat/sta")
+        if not data or not data.get("data"):
+            warn("No active clients found.")
+            return
+
+        clients = sorted(data["data"], key=lambda c: c.get("hostname", c.get("name", "zzz")))
+
+        choices = []
+        for c in clients:
+            hostname = c.get("hostname", c.get("name", "?"))[:20]
+            ip = c.get("ip", "?")
+            mac = c.get("mac", "?")
+            uptime = _format_uptime(c.get("uptime"))
+            signal = f"{c.get('signal', '?')} dBm" if c.get("signal") else "wired"
+            tx = c.get("tx_bytes", 0)
+            rx = c.get("rx_bytes", 0)
+            bw = ""
+            if tx or rx:
+                bw = f"  {C.DIM}↓{_format_bytes(rx)} ↑{_format_bytes(tx)}{C.RESET}"
+            choices.append(f"{hostname:<22} {ip:<16} {mac:<18} {uptime:<10} {signal}{bw}")
+
+        count = len(choices)
+        choices.append("───────────────")
+        choices.append("↻ Refresh")
+        choices.append("← Back")
+
+        idx = pick_option(f"Clients ({count}):", choices)
+        if idx <= count or idx == count + 1:
+            continue
+        return
+
+
+def _show_devices():
+    while True:
+        opener, base = _get_session()
+        if not opener:
+            return
+
+        data = _api_get(opener, base, "stat/device")
+        if not data or not data.get("data"):
+            warn("No network devices found.")
+            return
+
+        devices = data["data"]
+        choices = []
+        for d in devices:
+            name = d.get("name", d.get("model", "?"))
+            dtype = d.get("type", "?")
+            ip = d.get("ip", "?")
+            status = "adopted" if d.get("adopted") else "pending"
+            uptime = _format_uptime(d.get("uptime"))
+            choices.append(f"{name:<20} ({dtype})  IP: {ip}  {status}  Up: {uptime}")
+
+        count = len(choices)
+        choices.append("───────────────")
+        choices.append("↻ Refresh")
+        choices.append("← Back")
+
+        idx = pick_option(f"Network Devices ({count}):", choices)
+        if idx <= count or idx == count + 1:
+            continue
+        return
+
+
+def _bandwidth_stats():
+    """Show clients sorted by bandwidth usage."""
+    while True:
+        opener, base = _get_session()
+        if not opener:
+            return
+
+        data = _api_get(opener, base, "stat/sta")
+        if not data or not data.get("data"):
+            warn("No active clients found.")
+            return
+
+        clients = data["data"]
+        clients.sort(key=lambda c: (c.get("tx_bytes", 0) + c.get("rx_bytes", 0)), reverse=True)
+
+        choices = []
+        for c in clients:
+            hostname = c.get("hostname", c.get("name", "?"))[:20]
+            tx = c.get("tx_bytes", 0)
+            rx = c.get("rx_bytes", 0)
+            total = tx + rx
+            if total == 0:
+                continue
+            choices.append(
+                f"{hostname:<22} {C.GREEN}↓{C.RESET}{_format_bytes(rx):>10}  "
+                f"{C.ACCENT}↑{C.RESET}{_format_bytes(tx):>10}  "
+                f"Total: {_format_bytes(total)}"
+            )
+
+        if not choices:
+            warn("No bandwidth data available.")
+            return
+
+        count = len(choices)
+        choices.append("───────────────")
+        choices.append("↻ Refresh")
+        choices.append("← Back")
+
+        idx = pick_option(f"Bandwidth ({count} clients):", choices)
+        if idx <= count or idx == count + 1:
+            continue
+        return
+
+
+def _block_unblock_client():
+    """Block or unblock a client device."""
     opener, base = _get_session()
     if not opener:
         return
@@ -149,20 +302,44 @@ def _show_clients():
         return
 
     clients = sorted(data["data"], key=lambda c: c.get("hostname", c.get("name", "zzz")))
-
-    rows = []
+    choices = []
     for c in clients:
         hostname = c.get("hostname", c.get("name", "?"))[:20]
         ip = c.get("ip", "?")
         mac = c.get("mac", "?")
-        uptime = _format_uptime(c.get("uptime"))
-        signal = f"{c.get('signal', '?')} dBm" if c.get("signal") else "wired"
-        rows.append(f"{hostname:<22} {ip:<16} {mac:<18} {uptime:<10} {signal}")
+        blocked = c.get("blocked", False)
+        status = f"  {C.RED}BLOCKED{C.RESET}" if blocked else ""
+        choices.append(f"{hostname:<22} {ip:<16} {mac:<18}{status}")
 
-    scrollable_list(f"Clients ({len(rows)}):", rows)
+    choices.append("← Back")
+    idx = pick_option("Select client to block/unblock:", choices)
+    if idx >= len(clients):
+        return
+
+    client = clients[idx]
+    mac = client.get("mac", "")
+    hostname = client.get("hostname", client.get("name", mac))
+    is_blocked = client.get("blocked", False)
+
+    if is_blocked:
+        action = "unblock"
+        cmd = "unblock-sta"
+    else:
+        action = "block"
+        cmd = "block-sta"
+
+    if not confirm(f"{action.title()} '{hostname}' ({mac})?", default_yes=False):
+        return
+
+    result = _api_post(opener, base, "cmd/stamgr", {"cmd": cmd, "mac": mac})
+    if result is not None:
+        success(f"Client {action}ed: {hostname}")
+    else:
+        error(f"Failed to {action} client.")
 
 
-def _show_devices():
+def _restart_device():
+    """Restart a network device (AP, switch, gateway)."""
     opener, base = _get_session()
     if not opener:
         return
@@ -173,16 +350,31 @@ def _show_devices():
         return
 
     devices = data["data"]
-    rows = []
+    choices = []
     for d in devices:
         name = d.get("name", d.get("model", "?"))
         dtype = d.get("type", "?")
         ip = d.get("ip", "?")
-        status = "adopted" if d.get("adopted") else "pending"
         uptime = _format_uptime(d.get("uptime"))
-        rows.append(f"{name:<20} ({dtype})  IP: {ip}  {status}  Up: {uptime}")
+        choices.append(f"{name:<20} ({dtype})  IP: {ip}  Up: {uptime}")
 
-    scrollable_list(f"Network Devices ({len(rows)}):", rows)
+    choices.append("← Back")
+    idx = pick_option("Select device to restart:", choices)
+    if idx >= len(devices):
+        return
+
+    device = devices[idx]
+    mac = device.get("mac", "")
+    name = device.get("name", device.get("model", mac))
+
+    if not confirm(f"Restart '{name}' ({mac})? Device will be briefly offline.", default_yes=False):
+        return
+
+    result = _api_post(opener, base, "cmd/devmgr", {"cmd": "restart", "mac": mac})
+    if result is not None:
+        success(f"Restart initiated: {name}")
+    else:
+        error("Failed to restart device.")
 
 
 def _search_client():

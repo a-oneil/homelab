@@ -1,4 +1,4 @@
-"""OPNsense router plugin — system status, interfaces, ARP, DHCP."""
+"""OPNsense router plugin — system status, interfaces, firewall, services, VPN."""
 
 import json
 import ssl
@@ -13,7 +13,7 @@ _HEADER_CACHE = {"timestamp": 0, "stats": ""}
 _CACHE_TTL = 300
 
 
-def _api(endpoint, method="GET", data=None):
+def _api(endpoint, method="GET", data=None, silent=False):
     """Make an authenticated API call to OPNsense (HTTP Basic)."""
     base = CFG.get("opnsense_url", "").rstrip("/")
     key = CFG.get("opnsense_api_key", "")
@@ -43,7 +43,8 @@ def _api(endpoint, method="GET", data=None):
         with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
             return json.loads(resp.read().decode())
     except Exception as e:
-        error(f"OPNsense API error: {e}")
+        if not silent:
+            error(f"OPNsense API error: {e}")
         return None
 
 
@@ -77,8 +78,12 @@ class OpnsensePlugin(Plugin):
         return {
             "OPNsense Status": ("opnsense_status", _system_status),
             "OPNsense Interfaces": ("opnsense_interfaces", _interfaces),
+            "OPNsense Firewall Rules": ("opnsense_fw_rules", _firewall_rules),
+            "OPNsense Firewall Log": ("opnsense_fw_log", _firewall_log),
             "OPNsense ARP Table": ("opnsense_arp", _arp_table),
             "OPNsense DHCP Leases": ("opnsense_dhcp", _dhcp_leases),
+            "OPNsense Services": ("opnsense_services", _services),
+            "OPNsense VPN Status": ("opnsense_vpn", _vpn_status),
         }
 
 
@@ -99,18 +104,22 @@ def opnsense_menu():
         idx = pick_option("OPNsense:", [
             "System Status         — uptime, firmware, CPU, RAM",
             "Interfaces            — WAN/LAN status, traffic stats",
+            "Firewall Rules        — filter rules with action and status",
+            "Firewall Log          — recent firewall log entries",
             "ARP Table             — IP <-> MAC mappings",
             "DHCP Leases           — active leases",
+            "Services              — view and restart system services",
+            "VPN Status            — WireGuard and OpenVPN connections",
             "Firmware Update       — check for and apply updates",
             "───────────────",
             "★ Add to Favorites   — pin an action to the main menu",
             "← Back",
         ])
-        if idx == 7:
+        if idx == 11:
             return
-        elif idx == 5:
+        elif idx == 9:
             continue
-        elif idx == 6:
+        elif idx == 10:
             from homelab.plugins import add_plugin_favorite
             add_plugin_favorite(OpnsensePlugin())
         elif idx == 0:
@@ -118,10 +127,18 @@ def opnsense_menu():
         elif idx == 1:
             _interfaces()
         elif idx == 2:
-            _arp_table()
+            _firewall_rules()
         elif idx == 3:
-            _dhcp_leases()
+            _firewall_log()
         elif idx == 4:
+            _arp_table()
+        elif idx == 5:
+            _dhcp_leases()
+        elif idx == 6:
+            _services()
+        elif idx == 7:
+            _vpn_status()
+        elif idx == 8:
             _firmware_update()
 
 
@@ -401,4 +418,345 @@ def _firmware_update():
         success("Firmware update started. OPNsense will reboot when complete.")
     else:
         error("Failed to start firmware update.")
+    input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
+
+
+def _format_count(n):
+    """Format a large number with K/M suffixes."""
+    try:
+        n = int(n)
+    except (ValueError, TypeError):
+        return str(n)
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}K"
+    return str(n)
+
+
+def _format_rule_bytes(b):
+    """Format bytes for rule stats."""
+    try:
+        b = int(b)
+    except (ValueError, TypeError):
+        return str(b)
+    if b == 0:
+        return "0"
+    for unit in ("B", "KB", "MB", "GB"):
+        if b < 1024:
+            return f"{b:.0f}{unit}"
+        b /= 1024
+    return f"{b:.1f}TB"
+
+
+def _fetch_rule_descriptions():
+    """Fetch rule descriptions from searchRule and build hash-to-label map."""
+    desc_map = {}
+    data = _api(
+        "/api/firewall/filter/searchRule?show_all=1", method="POST",
+        data={"current": 1, "rowCount": 500, "sort": {}, "searchPhrase": ""},
+        silent=True
+    )
+    if not data or not isinstance(data, dict):
+        return desc_map
+    for rule in data.get("rows", []):
+        uuid = rule.get("uuid", "")
+        desc = rule.get("description", "")
+        if not desc:
+            action = rule.get("action", "")
+            interface = rule.get("interface", "")
+            source = rule.get("source_net", "")
+            dest = rule.get("destination_net", "")
+            parts = [p for p in [action, interface] if p]
+            if source:
+                parts.append(source)
+            if dest:
+                parts.append(f"-> {dest}")
+            desc = " ".join(parts)
+        if uuid and desc:
+            desc_map[uuid] = desc
+    return desc_map
+
+
+def _firewall_rules():
+    """Display all pf firewall rules with descriptions and hit statistics."""
+    while True:
+        data = _api("/api/firewall/filter_util/ruleStats")
+        if not data or not isinstance(data, dict) or data.get("status") != "ok":
+            error("Could not fetch firewall rules.")
+            return
+
+        stats = data.get("stats", {})
+        if not stats:
+            warn("No firewall rules found.")
+            return
+
+        desc_map = _fetch_rule_descriptions()
+
+        choices = []
+        for i, (rule_hash, rule) in enumerate(stats.items(), 1):
+            packets = rule.get("packets", 0)
+            rule_bytes = rule.get("bytes", 0)
+            states = rule.get("states", 0)
+            pf_count = rule.get("pf_rules", 0)
+
+            desc = desc_map.get(rule_hash, "")
+            if desc:
+                label = desc[:30]
+            else:
+                label = f"#{i} {rule_hash[:8]}"
+
+            active = int(packets) > 0 if packets else False
+            icon = f"{C.GREEN}●{C.RESET}" if active else f"{C.DIM}○{C.RESET}"
+
+            parts = [
+                f"{icon} {label:<30}",
+                f"pkts: {_format_count(packets):>7}",
+                f"bytes: {_format_rule_bytes(rule_bytes):>7}",
+                f"states: {_format_count(states):>5}",
+            ]
+            if pf_count > 1:
+                parts.append(f"{C.DIM}({pf_count} pf rules){C.RESET}")
+
+            choices.append("  ".join(parts))
+
+        rule_count = len(choices)
+        choices.append("───────────────")
+        choices.append("↻ Refresh")
+        choices.append("← Back")
+
+        idx = pick_option(f"Firewall Rules ({rule_count}):", choices)
+        if idx == rule_count:
+            continue
+        elif idx == rule_count + 1:
+            continue
+        elif idx == rule_count + 2:
+            return
+
+
+def _parse_filterlog(line):
+    """Parse a BSD filterlog CSV line into a dict.
+
+    Format: rulenr,subnr,anchor,ruleidentifier,interface,reason,action,dir,ipver,...
+    IPv4 continues: tos,ecn,ttl,id,offset,flags,protonum,protoname,length,src,dst,...
+    TCP/UDP adds: srcport,dstport,...
+    """
+    fields = line.split(",")
+    if len(fields) < 10:
+        return None
+    result = {
+        "interface": fields[4] if len(fields) > 4 else "?",
+        "action": fields[6] if len(fields) > 6 else "?",
+        "direction": fields[7] if len(fields) > 7 else "?",
+        "ipver": fields[8] if len(fields) > 8 else "?",
+    }
+    if result["ipver"] == "4" and len(fields) > 19:
+        result["proto"] = fields[16]
+        result["src"] = fields[18]
+        result["dst"] = fields[19]
+        if len(fields) > 21:
+            result["src"] += f":{fields[20]}"
+            result["dst"] += f":{fields[21]}"
+    elif result["ipver"] == "6" and len(fields) > 18:
+        result["proto"] = fields[12]
+        result["src"] = fields[15]
+        result["dst"] = fields[16]
+        if len(fields) > 18:
+            result["src"] += f":{fields[17]}"
+            result["dst"] += f":{fields[18]}"
+    return result
+
+
+def _firewall_log():
+    """View recent firewall log entries."""
+    while True:
+        data = _api("/api/diagnostics/log/core/filter", method="POST",
+                    data={"current": 1, "rowCount": 50, "sort": {}, "searchPhrase": ""})
+        if not data:
+            error("Could not fetch firewall logs.")
+            return
+
+        entries = data if isinstance(data, list) else data.get("rows", [])
+        if not entries:
+            warn("No log entries found.")
+            return
+
+        choices = []
+        for entry in entries:
+            timestamp = entry.get("timestamp", "?")
+            if "T" in str(timestamp):
+                timestamp = timestamp.split("T")[1]
+
+            line = entry.get("line", "").strip()
+            parsed = _parse_filterlog(line)
+
+            if parsed:
+                action = parsed.get("action", "?")
+                interface = parsed.get("interface", "?")
+                src = parsed.get("src", "?")
+                dst = parsed.get("dst", "?")
+                proto = parsed.get("proto", "?")
+
+                if action.lower() == "block":
+                    action_str = f"{C.RED}{action:<6}{C.RESET}"
+                elif action.lower() == "pass":
+                    action_str = f"{C.GREEN}{action:<6}{C.RESET}"
+                else:
+                    action_str = f"{action:<6}"
+
+                choices.append(f"{timestamp:<9} {action_str} {interface:<6} {proto:<6} {src:<22} -> {dst}")
+            else:
+                msg = line[:70] if line else entry.get("process_name", "?")
+                choices.append(f"{timestamp:<9} {C.DIM}{msg}{C.RESET}")
+
+        entry_count = len(choices)
+        choices.append("───────────────")
+        choices.append("↻ Refresh")
+        choices.append("← Back")
+
+        idx = pick_option(f"Firewall Log ({entry_count} entries):", choices)
+        if idx == entry_count:
+            continue
+        elif idx == entry_count + 1:
+            continue
+        elif idx == entry_count + 2:
+            return
+
+
+def _services():
+    """View and restart OPNsense services."""
+    while True:
+        data = _api("/api/core/service/search")
+        if not data:
+            error("Could not fetch services.")
+            return
+
+        svc_rows = data.get("rows", [])
+        if not svc_rows:
+            warn("No services found.")
+            return
+
+        choices = []
+        for svc in svc_rows:
+            name = svc.get("name", "?")
+            description = svc.get("description", "")[:35]
+            running = svc.get("running", 0)
+
+            if running:
+                icon = f"{C.GREEN}●{C.RESET}"
+                status = "running"
+            else:
+                icon = f"{C.DIM}○{C.RESET}"
+                status = "stopped"
+
+            choices.append(f"{icon} {name:<25} {status:<10} {description}")
+
+        choices.append("← Back")
+        idx = pick_option("Services:", choices)
+        if idx >= len(svc_rows):
+            return
+
+        svc = svc_rows[idx]
+        svc_name = svc.get("name", "?")
+        svc_id = svc.get("id", svc_name)
+        _service_actions(svc_name, svc_id)
+
+
+def _service_actions(svc_name, svc_id):
+    """Actions for a specific service."""
+    idx = pick_option(f"Service: {svc_name}", [
+        "Restart service",
+        "Stop service",
+        "Start service",
+        "← Back",
+    ])
+    if idx == 3:
+        return
+    elif idx == 0:
+        if not confirm(f"Restart '{svc_name}'?", default_yes=False):
+            return
+        result = _api(f"/api/core/service/restart/{svc_id}", method="POST")
+        if result is not None:
+            success(f"Restarted: {svc_name}")
+        else:
+            error(f"Failed to restart {svc_name}.")
+    elif idx == 1:
+        if not confirm(f"Stop '{svc_name}'?", default_yes=False):
+            return
+        result = _api(f"/api/core/service/stop/{svc_id}", method="POST")
+        if result is not None:
+            success(f"Stopped: {svc_name}")
+        else:
+            error(f"Failed to stop {svc_name}.")
+    elif idx == 2:
+        result = _api(f"/api/core/service/start/{svc_id}", method="POST")
+        if result is not None:
+            success(f"Started: {svc_name}")
+        else:
+            error(f"Failed to start {svc_name}.")
+
+
+def _vpn_status():
+    """Show WireGuard and OpenVPN connection status."""
+    print(f"\n  {C.BOLD}VPN Status{C.RESET}\n")
+
+    any_data = False
+
+    # WireGuard
+    wg_data = _api("/api/wireguard/general/getStatus")
+    if wg_data and isinstance(wg_data, dict):
+        peers = wg_data.get("peers", wg_data.get("rows", []))
+        if isinstance(peers, list) and peers:
+            any_data = True
+            print(f"  {C.BOLD}WireGuard Peers:{C.RESET}")
+            for peer in peers:
+                name = peer.get("name", peer.get("publicKey", "?")[:16])
+                endpoint = peer.get("endpoint", "?")
+                latest = peer.get("latestHandshake", peer.get("latest_handshake", ""))
+                transfer_rx = peer.get("transferRx", peer.get("transfer_rx", 0))
+                transfer_tx = peer.get("transferTx", peer.get("transfer_tx", 0))
+
+                connected = bool(latest and str(latest) not in ("0", "(none)", ""))
+                icon = f"{C.GREEN}●{C.RESET}" if connected else f"{C.DIM}○{C.RESET}"
+
+                line = f"    {icon} {name:<25} {endpoint}"
+                try:
+                    rx_mb = int(transfer_rx) / (1024 ** 2)
+                    tx_mb = int(transfer_tx) / (1024 ** 2)
+                    if rx_mb > 0 or tx_mb > 0:
+                        line += f"  {C.DIM}↓{rx_mb:.0f}MB ↑{tx_mb:.0f}MB{C.RESET}"
+                except (ValueError, TypeError):
+                    pass
+                print(line)
+            print()
+
+    # OpenVPN
+    ovpn_data = _api("/api/openvpn/service/searchSessions")
+    if ovpn_data and isinstance(ovpn_data, dict):
+        sessions = ovpn_data.get("rows", [])
+        if sessions:
+            any_data = True
+            print(f"  {C.BOLD}OpenVPN Sessions:{C.RESET}")
+            for s in sessions:
+                name = s.get("common_name", s.get("username", "?"))
+                real_addr = s.get("real_address", "?")
+                connected_since = s.get("connected_since", "?")
+
+                icon = f"{C.GREEN}●{C.RESET}"
+                line = f"    {icon} {name:<25} {real_addr:<22} since {connected_since}"
+                try:
+                    rx = int(s.get("bytes_received", 0))
+                    tx = int(s.get("bytes_sent", 0))
+                    if rx > 0 or tx > 0:
+                        rx_mb = rx / (1024 ** 2)
+                        tx_mb = tx / (1024 ** 2)
+                        line += f"  {C.DIM}↓{rx_mb:.0f}MB ↑{tx_mb:.0f}MB{C.RESET}"
+                except (ValueError, TypeError):
+                    pass
+                print(line)
+            print()
+
+    if not any_data:
+        warn("No VPN connections or tunnels found.")
+
     input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
