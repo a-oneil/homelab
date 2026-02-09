@@ -7,13 +7,13 @@ import urllib.request
 
 from homelab.config import CFG
 from homelab.plugins import Plugin
-from homelab.ui import C, pick_option, scrollable_list, error, warn, bar_chart
+from homelab.ui import C, pick_option, scrollable_list, confirm, info, success, error, warn, bar_chart
 
 _HEADER_CACHE = {"timestamp": 0, "stats": ""}
 _CACHE_TTL = 300
 
 
-def _api(endpoint):
+def _api(endpoint, method="GET", data=None):
     """Make an authenticated API call to OPNsense (HTTP Basic)."""
     base = CFG.get("opnsense_url", "").rstrip("/")
     key = CFG.get("opnsense_api_key", "")
@@ -23,13 +23,19 @@ def _api(endpoint):
 
     url = f"{base}{endpoint}"
 
-    # HTTP Basic auth
     import base64
     credentials = base64.b64encode(f"{key}:{secret}".encode()).decode()
 
-    req = urllib.request.Request(url, headers={
-        "Authorization": f"Basic {credentials}",
-    })
+    headers = {"Authorization": f"Basic {credentials}"}
+    payload = None
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+        payload = json.dumps(data).encode()
+    elif method == "POST":
+        payload = b"{}"
+        headers["Content-Type"] = "application/json"
+
+    req = urllib.request.Request(url, data=payload, headers=headers, method=method)
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
@@ -95,15 +101,16 @@ def opnsense_menu():
             "Interfaces            — WAN/LAN status, traffic stats",
             "ARP Table             — IP <-> MAC mappings",
             "DHCP Leases           — active leases",
+            "Firmware Update       — check for and apply updates",
             "───────────────",
             "★ Add to Favorites   — pin an action to the main menu",
             "← Back",
         ])
-        if idx == 6:
+        if idx == 7:
             return
-        elif idx == 4:
-            continue
         elif idx == 5:
+            continue
+        elif idx == 6:
             from homelab.plugins import add_plugin_favorite
             add_plugin_favorite(OpnsensePlugin())
         elif idx == 0:
@@ -114,6 +121,8 @@ def opnsense_menu():
             _arp_table()
         elif idx == 3:
             _dhcp_leases()
+        elif idx == 4:
+            _firmware_update()
 
 
 def _system_status():
@@ -192,29 +201,95 @@ def _system_status():
     input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
 
 
+def _extract_addr(val):
+    """Pull a displayable IP string from addr4/ipv4 which may be list or str."""
+    if not val:
+        return ""
+    if isinstance(val, str):
+        return val
+    if isinstance(val, list):
+        parts = []
+        for a in val:
+            if isinstance(a, dict):
+                parts.append(a.get("address", a.get("ipaddr", str(a))))
+            elif isinstance(a, str):
+                parts.append(a)
+        return ", ".join(parts)
+    return str(val)
+
+
 def _interfaces():
     data = _api("/api/interfaces/overview/export")
-    if not data:
-        # Try alternative endpoint
-        data = _api("/api/diagnostics/interface/getInterfaceStatistics")
     if not data:
         error("Could not fetch interface info.")
         return
 
+    # Normalize: if it's a list, convert to dict keyed by index
+    items = data.items() if isinstance(data, dict) else enumerate(data)
+
     print(f"\n  {C.BOLD}OPNsense Interfaces{C.RESET}\n")
 
-    if isinstance(data, dict):
-        for iface_name, iface_data in data.items():
-            if isinstance(iface_data, dict):
-                status = iface_data.get("status", "?")
-                addr = iface_data.get("ipaddr", iface_data.get("addr", "?"))
-                print(f"  {C.ACCENT}{iface_name}{C.RESET}  Status: {status}  IP: {addr}")
-    elif isinstance(data, list):
-        for iface in data:
-            name = iface.get("description", iface.get("name", "?"))
-            status = iface.get("status", "?")
-            addr = iface.get("addr", "?")
-            print(f"  {C.ACCENT}{name}{C.RESET}  Status: {status}  IP: {addr}")
+    for iface_key, d in items:
+        if not isinstance(d, dict):
+            continue
+
+        desc = d.get("description", str(iface_key))
+        status = d.get("status", "?")
+        addr = _extract_addr(d.get("addr4")) or _extract_addr(d.get("ipv4"))
+        enabled = d.get("enabled", True)
+
+        # Skip unassigned interfaces that are down with no IP
+        if desc == "Unassigned Interface" and status != "up" and not addr:
+            continue
+
+        icon = f"{C.GREEN}●{C.RESET}" if status == "up" else f"{C.DIM}○{C.RESET}"
+        line = f"  {icon} {desc:<20}"
+
+        device = d.get("device", "")
+        if device:
+            line += f" {C.DIM}{device:<10}{C.RESET}"
+
+        vlan = d.get("vlan_tag", "")
+        if vlan:
+            line += f" {C.ACCENT}VLAN {vlan}{C.RESET}"
+
+        if addr:
+            line += f"  {addr}"
+
+        # Gateway
+        gateways = d.get("gateways", [])
+        if isinstance(gateways, list):
+            for gw in gateways:
+                if isinstance(gw, dict):
+                    gw_addr = gw.get("gateway", gw.get("address", ""))
+                    gw_name = gw.get("name", "")
+                    if gw_addr:
+                        label = f"{gw_name} {gw_addr}" if gw_name else gw_addr
+                        line += f"  {C.DIM}gw {label}{C.RESET}"
+
+        # Traffic stats
+        stats = d.get("statistics", {})
+        if isinstance(stats, dict):
+            rx = stats.get("bytes received", stats.get("bytes_received", 0))
+            tx = stats.get("bytes transmitted", stats.get("bytes_transmitted", 0))
+            try:
+                rx_mb = int(rx) / (1024 ** 2)
+                tx_mb = int(tx) / (1024 ** 2)
+                if rx_mb > 0 or tx_mb > 0:
+                    line += f"  {C.DIM}↓{rx_mb:.0f}MB ↑{tx_mb:.0f}MB{C.RESET}"
+            except (ValueError, TypeError):
+                pass
+
+        if not enabled:
+            line += f"  {C.YELLOW}(disabled){C.RESET}"
+
+        print(line)
+
+    # IPv6 summary
+    all_ifaces = data.values() if isinstance(data, dict) else data
+    v6_count = sum(1 for d in all_ifaces if isinstance(d, dict) and _extract_addr(d.get("addr6")))
+    if v6_count:
+        print(f"\n  {C.DIM}{v6_count} interface(s) with IPv6{C.RESET}")
 
     input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
 
@@ -260,3 +335,70 @@ def _dhcp_leases():
         lines.append(f"{ip:<18} {mac:<20} {hostname}")
 
     scrollable_list(f"DHCP Leases ({len(lines)}):", lines)
+
+
+def _firmware_update():
+    """Check for and apply OPNsense firmware updates."""
+    info("Checking for updates...")
+    _api("/api/core/firmware/check", method="POST")
+
+    # Poll status until the check completes
+    import time as _time
+    for _ in range(15):
+        status = _api("/api/core/firmware/status", method="POST")
+        if status and status.get("status") != "running":
+            break
+        _time.sleep(2)
+
+    if not status:
+        error("Could not check firmware status.")
+        input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
+        return
+
+    print(f"\n  {C.BOLD}OPNsense Firmware{C.RESET}\n")
+
+    current = status.get("product_version", status.get("product", {}).get("product_version", "?"))
+    print(f"  {C.BOLD}Current:{C.RESET}  {current}")
+
+    # Show available updates
+    new_packages = status.get("new_packages", [])
+    upgrade_packages = status.get("upgrade_packages", [])
+    reinstall_packages = status.get("reinstall_packages", [])
+    downgrade_packages = status.get("downgrade_packages", [])
+
+    needs_update = status.get("status_upgrade_action", "") == "all"
+    update_msg = status.get("status_msg", "")
+
+    if update_msg:
+        print(f"  {C.BOLD}Status:{C.RESET}   {update_msg}")
+
+    if upgrade_packages:
+        print(f"  {C.ACCENT}{len(upgrade_packages)} package(s) to upgrade{C.RESET}")
+    if new_packages:
+        print(f"  {C.ACCENT}{len(new_packages)} new package(s){C.RESET}")
+    if reinstall_packages:
+        print(f"  {C.DIM}{len(reinstall_packages)} to reinstall{C.RESET}")
+    if downgrade_packages:
+        print(f"  {C.YELLOW}{len(downgrade_packages)} to downgrade{C.RESET}")
+
+    if not needs_update and not upgrade_packages and not new_packages:
+        success("System is up to date.")
+        input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
+        return
+
+    # Show changelog if available
+    changelog = status.get("product", {}).get("product_latest", "")
+    if changelog and changelog != current:
+        print(f"  {C.BOLD}Latest:{C.RESET}   {changelog}")
+
+    print()
+    if not confirm("Apply firmware update?", default_yes=False):
+        return
+
+    info("Starting firmware update...")
+    result = _api("/api/core/firmware/update", method="POST")
+    if result and result.get("status", "") == "ok":
+        success("Firmware update started. OPNsense will reboot when complete.")
+    else:
+        error("Failed to start firmware update.")
+    input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
