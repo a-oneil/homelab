@@ -233,6 +233,16 @@ def bar_chart(used, total, width=30):
     return f"{color}[{'█' * filled}{'░' * empty}]{C.RESET} {pct * 100:.0f}%"
 
 
+def scrollable_list(title, rows, header_line=""):
+    """Display rows in a scrollable, filterable list. Rows are view-only."""
+    if not rows:
+        warn("No entries to display.")
+        return
+    choices = list(rows)
+    choices.append("← Back")
+    pick_option(title, choices, header=header_line)
+
+
 def rebuild_style():
     """Rebuild questionary style after accent color change."""
     global STYLE

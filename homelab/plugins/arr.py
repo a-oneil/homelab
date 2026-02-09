@@ -10,7 +10,7 @@ import urllib.request
 
 from homelab.config import CFG
 from homelab.plugins import Plugin, add_plugin_favorite
-from homelab.ui import C, pick_option, confirm, prompt_text, success, error, warn
+from homelab.ui import C, pick_option, scrollable_list, confirm, prompt_text, success, error, warn
 
 
 def arr_api(base_url, api_key, api_version, endpoint, method="GET", data=None):
@@ -345,25 +345,24 @@ class ArrPlugin(Plugin):
             input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
             return
 
-        print(f"\n  {C.BOLD}{self._display} Recent Activity{C.RESET}\n")
-        for r in history["records"][:20]:
+        rows = []
+        for r in history["records"]:
             event = r.get("eventType", "?")
             date = r.get("date", "?")[:10]
             title = self._activity_title(r)
 
             if event == "grabbed":
-                icon = f"{C.ACCENT}↓{C.RESET}"
+                prefix = "↓"
             elif event in ("downloadFolderImported", "trackFileImported", "albumImportIncomplete"):
-                icon = f"{C.GREEN}✓{C.RESET}"
+                prefix = "✓"
             elif event in ("downloadFailed",):
-                icon = f"{C.RED}✗{C.RESET}"
+                prefix = "✗"
             else:
-                icon = f"{C.DIM}·{C.RESET}"
+                prefix = "·"
 
-            print(f"  {icon} {date}  {event:<28} {title}")
+            rows.append(f"{prefix} {date}  {event:<28} {title}")
 
-        print()
-        input(f"  {C.DIM}Press Enter to continue...{C.RESET}")
+        scrollable_list(f"{self._display} Recent Activity ({len(rows)}):", rows)
 
     def _activity_title(self, record):
         """Override in subclass for richer titles."""

@@ -8,7 +8,7 @@ import urllib.request
 
 from homelab.config import CFG
 from homelab.plugins import Plugin
-from homelab.ui import C, pick_option, prompt_text, error, warn
+from homelab.ui import pick_option, scrollable_list, prompt_text, error, warn
 
 _HEADER_CACHE = {"timestamp": 0, "stats": ""}
 _CACHE_TTL = 300
@@ -150,19 +150,16 @@ def _show_clients():
 
     clients = sorted(data["data"], key=lambda c: c.get("hostname", c.get("name", "zzz")))
 
-    print(f"\n  {C.BOLD}{'Hostname':<22} {'IP':<16} {'MAC':<18} {'Uptime':<10} {'Signal'}{C.RESET}")
-    print(f"  {C.DIM}{'─' * 80}{C.RESET}")
-
-    for c in clients[:50]:
+    rows = []
+    for c in clients:
         hostname = c.get("hostname", c.get("name", "?"))[:20]
         ip = c.get("ip", "?")
         mac = c.get("mac", "?")
         uptime = _format_uptime(c.get("uptime"))
         signal = f"{c.get('signal', '?')} dBm" if c.get("signal") else "wired"
-        print(f"  {hostname:<22} {ip:<16} {mac:<18} {uptime:<10} {signal}")
+        rows.append(f"{hostname:<22} {ip:<16} {mac:<18} {uptime:<10} {signal}")
 
-    print(f"\n  {C.DIM}Showing {min(len(clients), 50)} of {len(clients)} clients{C.RESET}")
-    input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
+    scrollable_list(f"Clients ({len(rows)}):", rows)
 
 
 def _show_devices():
@@ -176,16 +173,16 @@ def _show_devices():
         return
 
     devices = data["data"]
-    print(f"\n  {C.BOLD}Network Devices:{C.RESET}\n")
+    rows = []
     for d in devices:
         name = d.get("name", d.get("model", "?"))
         dtype = d.get("type", "?")
         ip = d.get("ip", "?")
         status = "adopted" if d.get("adopted") else "pending"
         uptime = _format_uptime(d.get("uptime"))
-        print(f"  {C.ACCENT}{name}{C.RESET}  ({dtype})  IP: {ip}  {status}  Up: {uptime}")
+        rows.append(f"{name:<20} ({dtype})  IP: {ip}  {status}  Up: {uptime}")
 
-    input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
+    scrollable_list(f"Network Devices ({len(rows)}):", rows)
 
 
 def _search_client():
@@ -214,11 +211,11 @@ def _search_client():
         warn("No matching clients found.")
         return
 
-    print(f"\n  {C.BOLD}Search results ({len(matches)}):{C.RESET}\n")
+    rows = []
     for c in matches:
         hostname = c.get("hostname", c.get("name", "?"))
         ip = c.get("ip", "?")
         mac = c.get("mac", "?")
-        print(f"  {C.ACCENT}{hostname}{C.RESET}  IP: {ip}  MAC: {mac}")
+        rows.append(f"{hostname:<22} IP: {ip:<16} MAC: {mac}")
 
-    input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
+    scrollable_list(f"Search results ({len(rows)}):", rows)

@@ -6,7 +6,7 @@ import urllib.request
 
 from homelab.config import CFG
 from homelab.plugins import Plugin
-from homelab.ui import C, pick_option, success, error, warn
+from homelab.ui import C, pick_option, scrollable_list, success, error, warn
 
 _HEADER_CACHE = {"timestamp": 0, "stats": ""}
 _CACHE_TTL = 300
@@ -234,7 +234,7 @@ def _list_devices():
     devices = config.get("devices", [])
     conns = connections.get("connections", {}) if connections else {}
 
-    print(f"\n  {C.BOLD}Syncthing Devices{C.RESET}\n")
+    rows = []
     for d in devices:
         dev_id = d.get("deviceID", "?")
         name = d.get("name", dev_id[:12])
@@ -242,7 +242,7 @@ def _list_devices():
         connected = conn.get("connected", False)
         address = conn.get("address", "?")
 
-        icon = f"{C.GREEN}●{C.RESET}" if connected else f"{C.DIM}○{C.RESET}"
+        icon = "●" if connected else "○"
         if connected:
             in_bytes = conn.get("inBytesTotal", 0) / (1024 ** 2)
             out_bytes = conn.get("outBytesTotal", 0) / (1024 ** 2)
@@ -250,10 +250,9 @@ def _list_devices():
         else:
             traffic = ""
 
-        print(f"  {icon} {name:<25} {C.DIM}{address}{C.RESET}{traffic}")
+        rows.append(f"{icon} {name:<25} {address}{traffic}")
 
-    print()
-    input(f"  {C.DIM}Press Enter to continue...{C.RESET}")
+    scrollable_list(f"Syncthing Devices ({len(rows)}):", rows)
 
 
 def _show_conflicts():

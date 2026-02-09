@@ -8,7 +8,7 @@ import urllib.request
 
 from homelab.config import CFG
 from homelab.plugins import Plugin
-from homelab.ui import C, pick_option, confirm, prompt_text, info, success, error, warn
+from homelab.ui import C, pick_option, scrollable_list, confirm, prompt_text, info, success, error, warn
 
 _HEADER_CACHE = {"timestamp": 0, "stats": ""}
 _CACHE_TTL = 300
@@ -280,15 +280,14 @@ def _list_issues():
         input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
         return
 
-    print(f"\n  {C.BOLD}Open Issues{C.RESET} ({len(all_issues)} total)\n")
-    for issue in all_issues[:30]:
+    rows = []
+    for issue in all_issues:
         repo = issue.get("_repo", "?")
         num = issue.get("number", "?")
         title = issue.get("title", "?")[:50]
-        print(f"  {C.DIM}{repo}{C.RESET} #{num}  {title}")
+        rows.append(f"{repo} #{num}  {title}")
 
-    print()
-    input(f"  {C.DIM}Press Enter to continue...{C.RESET}")
+    scrollable_list(f"Open Issues ({len(rows)}):", rows)
 
 
 def _create_repo():
