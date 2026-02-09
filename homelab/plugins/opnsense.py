@@ -7,7 +7,7 @@ import urllib.request
 
 from homelab.config import CFG
 from homelab.plugins import Plugin
-from homelab.ui import C, pick_option, error, warn
+from homelab.ui import C, pick_option, scrollable_list, error, warn, bar_chart
 
 _HEADER_CACHE = {"timestamp": 0, "stats": ""}
 _CACHE_TTL = 300
@@ -47,9 +47,7 @@ class OpnsensePlugin(Plugin):
 
     def is_configured(self):
         return bool(
-            CFG.get("opnsense_url")
-            and CFG.get("opnsense_api_key")
-            and CFG.get("opnsense_api_secret")
+            CFG.get("opnsense_url") and CFG.get("opnsense_api_key") and CFG.get("opnsense_api_secret")
         )
 
     def get_config_fields(self):
@@ -79,9 +77,14 @@ class OpnsensePlugin(Plugin):
 
 
 def _fetch_stats():
-    data = _api("/api/core/system/status")
-    if data:
-        _HEADER_CACHE["stats"] = "OPNsense: WAN up"
+    time_data = _api("/api/diagnostics/system/system_time")
+    if time_data and time_data.get("uptime"):
+        uptime = time_data["uptime"]
+        load = time_data.get("loadavg", "")
+        parts = [f"up {uptime}"]
+        if load and load != "N/A":
+            parts.append(f"load {load}")
+        _HEADER_CACHE["stats"] = f"OPNsense: {', '.join(parts)}"
     _HEADER_CACHE["timestamp"] = time.time()
 
 
@@ -114,33 +117,77 @@ def opnsense_menu():
 
 
 def _system_status():
-    data = _api("/api/core/system/status")
-    if not data:
+    sys_info = _api("/api/diagnostics/system/system_information")
+    time_data = _api("/api/diagnostics/system/system_time")
+    resources = _api("/api/diagnostics/system/system_resources")
+    cpu_data = _api("/api/diagnostics/cpu_usage/get_c_p_u_type")
+    firmware = _api("/api/core/firmware/info")
+    temps = _api("/api/diagnostics/system/system_temperature")
+    disk_data = _api("/api/diagnostics/system/system_disk")
+
+    if not sys_info and not time_data and not resources:
         error("Could not fetch system status.")
+        input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
         return
 
     print(f"\n  {C.BOLD}OPNsense System Status{C.RESET}\n")
 
-    for key, label in [
-        ("uptime", "Uptime"),
-        ("firmware", "Firmware"),
-        ("cpu_type", "CPU"),
-        ("cpu_count", "CPU Cores"),
-    ]:
-        val = data.get(key, "?")
-        if val and val != "?":
-            print(f"  {C.BOLD}{label}:{C.RESET}  {val}")
+    # Hostname + version
+    if sys_info:
+        if sys_info.get("name"):
+            print(f"  {C.BOLD}Host:{C.RESET}     {sys_info['name']}")
+        versions = sys_info.get("versions", [])
+        if versions:
+            print(f"  {C.BOLD}Version:{C.RESET}  {versions[0]}")
 
-    # Memory info
-    mem_total = data.get("physmem")
-    mem_used = data.get("physmem_used")
-    if mem_total and mem_used:
-        try:
-            total_gb = int(mem_total) / (1024**3)
-            used_gb = int(mem_used) / (1024**3)
-            print(f"  {C.BOLD}RAM:{C.RESET}      {used_gb:.1f} / {total_gb:.1f} GB")
-        except (ValueError, TypeError):
-            pass
+    # Firmware
+    if firmware and firmware.get("product_version"):
+        name = firmware.get("product_name", "OPNsense")
+        print(f"  {C.BOLD}Firmware:{C.RESET} {name} {firmware['product_version']}")
+
+    # Uptime + load
+    if time_data:
+        if time_data.get("uptime"):
+            print(f"  {C.BOLD}Uptime:{C.RESET}   {time_data['uptime']}")
+        if time_data.get("loadavg") and time_data["loadavg"] != "N/A":
+            print(f"  {C.BOLD}Load:{C.RESET}     {time_data['loadavg']}")
+
+    # CPU
+    if cpu_data and isinstance(cpu_data, list) and cpu_data:
+        print(f"  {C.BOLD}CPU:{C.RESET}      {cpu_data[0]}")
+
+    # Memory
+    if resources and isinstance(resources, dict):
+        mem = resources.get("memory", {})
+        used_mb = mem.get("used_frmt")
+        total_mb = mem.get("total_frmt")
+        if used_mb and total_mb:
+            try:
+                used = int(used_mb)
+                total = int(total_mb)
+                chart = bar_chart(used, total)
+                print(f"  {C.BOLD}RAM:{C.RESET}      {used} / {total} MB  {chart}")
+            except (ValueError, TypeError):
+                print(f"  {C.BOLD}RAM:{C.RESET}      {used_mb} / {total_mb} MB")
+        arc_txt = mem.get("arc_txt")
+        if arc_txt:
+            print(f"  {C.BOLD}ARC:{C.RESET}      {arc_txt}")
+
+    # Temperature
+    if temps and isinstance(temps, list):
+        cpu_temps = [t for t in temps if t.get("type") == "cpu"]
+        zone_temps = [t for t in temps if t.get("type") == "zone"]
+        for t in (cpu_temps or zone_temps)[:2]:
+            label = t.get("type_translated", "Temp")
+            print(f"  {C.BOLD}{label}:{C.RESET}    {t.get('temperature', '?')}")
+
+    # Disk
+    if disk_data and isinstance(disk_data, dict):
+        for dev in disk_data.get("devices", []):
+            mp = dev.get("mountpoint", "?")
+            used_pct = dev.get("used_pct", "?")
+            size = dev.get("blocks", "?")
+            print(f"  {C.BOLD}Disk {mp}:{C.RESET}  {used_pct} of {size}")
 
     input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
 
@@ -183,20 +230,15 @@ def _arp_table():
         warn("ARP table is empty.")
         return
 
-    print(f"\n  {C.BOLD}ARP Table{C.RESET}\n")
-    print(f"  {C.BOLD}{'IP':<18} {'MAC':<20} {'Interface'}{C.RESET}")
-    print(f"  {C.DIM}{'─' * 55}{C.RESET}")
-
-    for entry in entries[:50]:
+    rows = []
+    for entry in entries:
         if isinstance(entry, dict):
             ip = entry.get("ip", "?")
             mac = entry.get("mac", "?")
             iface = entry.get("intf", entry.get("interface", "?"))
-            print(f"  {ip:<18} {mac:<20} {iface}")
+            rows.append(f"{ip:<18} {mac:<20} {iface}")
 
-    if len(entries) > 50:
-        print(f"\n  {C.DIM}Showing 50 of {len(entries)} entries{C.RESET}")
-    input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
+    scrollable_list(f"ARP Table ({len(rows)} entries):", rows)
 
 
 def _dhcp_leases():
@@ -210,16 +252,11 @@ def _dhcp_leases():
         warn("No DHCP leases found.")
         return
 
-    print(f"\n  {C.BOLD}DHCP Leases{C.RESET}\n")
-    print(f"  {C.BOLD}{'IP':<18} {'MAC':<20} {'Hostname'}{C.RESET}")
-    print(f"  {C.DIM}{'─' * 60}{C.RESET}")
-
-    for lease in rows[:50]:
+    lines = []
+    for lease in rows:
         ip = lease.get("address", "?")
         mac = lease.get("mac", "?")
         hostname = lease.get("hostname", "?")
-        print(f"  {ip:<18} {mac:<20} {hostname}")
+        lines.append(f"{ip:<18} {mac:<20} {hostname}")
 
-    if len(rows) > 50:
-        print(f"\n  {C.DIM}Showing 50 of {len(rows)} leases{C.RESET}")
-    input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
+    scrollable_list(f"DHCP Leases ({len(lines)}):", lines)
