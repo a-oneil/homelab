@@ -264,23 +264,66 @@ def _list_redirects():
 
 
 def _list_certs():
-    """List SSL certificates."""
-    certs = _api("/nginx/certificates")
-    if not certs or not isinstance(certs, list):
-        warn("No certificates found.")
-        input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
+    """List SSL certificates with actions."""
+    while True:
+        certs = _api("/nginx/certificates")
+        if not certs or not isinstance(certs, list):
+            warn("No certificates found.")
+            input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
+            return
+
+        choices = []
+        for c in certs:
+            domains = ", ".join(c.get("domain_names", ["?"]))
+            provider = c.get("provider", "?")
+            expires = (c.get("expires_on") or "?")[:10]
+            choices.append(f"🔒 {domains:<40} {provider:<15} expires {expires}")
+
+        choices.append("← Back")
+        idx = pick_option("SSL Certificates:", choices)
+        if idx >= len(certs):
+            return
+
+        _cert_detail(certs[idx])
+
+
+def _cert_detail(cert):
+    """Show detail and actions for an SSL certificate."""
+    cert_id = cert.get("id")
+    domains = ", ".join(cert.get("domain_names", ["?"]))
+    provider = cert.get("provider", "?")
+    expires = cert.get("expires_on", "?")
+    nice_name = cert.get("nice_name", "")
+
+    print(f"\n  {C.BOLD}Certificate #{cert_id}{C.RESET}")
+    if nice_name:
+        print(f"  Name: {nice_name}")
+    print(f"  Domains: {C.ACCENT}{domains}{C.RESET}")
+    print(f"  Provider: {provider}")
+    print(f"  Expires: {expires}")
+
+    actions = []
+    if provider == "letsencrypt":
+        actions.append("Renew")
+    actions.append("Delete")
+    actions.append("← Back")
+
+    aidx = pick_option(f"Certificate: {domains}", actions)
+    action = actions[aidx]
+
+    if action == "← Back":
         return
-
-    print(f"\n  {C.BOLD}SSL Certificates{C.RESET} ({len(certs)})\n")
-    for c in certs:
-        domains = ", ".join(c.get("domain_names", ["?"]))
-        provider = c.get("provider", "?")
-        expires = c.get("expires_on", "?")
-        print(f"  {C.GREEN}🔒{C.RESET} {domains}")
-        print(f"     Provider: {provider}  Expires: {expires}")
-
-    print()
-    input(f"  {C.DIM}Press Enter to continue...{C.RESET}")
+    elif action == "Renew":
+        result = _api(f"/nginx/certificates/{cert_id}/renew", method="POST")
+        if result is not None:
+            success(f"Renewal triggered for {domains}")
+        else:
+            error(f"Renewal failed for {domains}")
+        input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
+    elif action == "Delete":
+        if confirm(f"Delete certificate for {domains}?", default_yes=False):
+            _api(f"/nginx/certificates/{cert_id}", method="DELETE")
+            success(f"Deleted certificate: {domains}")
 
 
 def _pick_certificate():
