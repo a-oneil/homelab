@@ -114,7 +114,7 @@ def pick_option(prompt, options, header=""):
         use_indicator=True,
         use_search_filter=True,
         use_jk_keys=False,
-        instruction="(↑↓ navigate, type to filter, Ctrl-G to go back)",
+        instruction="(↑↓/Tab navigate, type to filter, Ctrl-G back)",
     )
 
     back_kb = KeyBindings()
@@ -124,7 +124,37 @@ def pick_option(prompt, options, header=""):
         event.app.exit(exception=KeyboardInterrupt, style="class:aborting")
 
     app = question.application
+
+    # Find the InquirerControl so we can add Tab/BackTab navigation
+    from questionary.prompts.common import InquirerControl
+    ic = None
+    for window in app.layout.find_all_windows():
+        if isinstance(window.content, InquirerControl):
+            ic = window.content
+            break
+
+    if ic is not None:
+        @back_kb.add(Keys.Tab, eager=True)
+        def _tab_next(event):
+            ic.select_next()
+            while not ic.is_selection_valid():
+                ic.select_next()
+
+        @back_kb.add(Keys.BackTab, eager=True)
+        def _tab_prev(event):
+            ic.select_previous()
+            while not ic.is_selection_valid():
+                ic.select_previous()
+
     app.key_bindings = merge_key_bindings([app.key_bindings, back_kb])
+
+    # Move search filter indicator above the choices so it appears right
+    # under the question line instead of at the bottom of a long list.
+    hsplit = app.layout.container
+    if hasattr(hsplit, 'children') and len(hsplit.children) >= 3:
+        # Default order: [question, choices, search_filter, ...]
+        # Swap to:       [question, search_filter, choices, ...]
+        hsplit.children[1], hsplit.children[2] = hsplit.children[2], hsplit.children[1]
 
     try:
         result = question.unsafe_ask()
