@@ -25,10 +25,18 @@ def ssh_run(command, capture=True, background=False):
             "-o", "ConnectTimeout=5",
             get_host(), command,
         ]
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        return subprocess.run(
+            cmd, capture_output=True, text=True, timeout=15,
+            stdin=subprocess.DEVNULL,
+        )
     cmd = ["ssh", get_host(), command]
     if capture:
-        return subprocess.run(cmd, capture_output=True, text=True)
+        # Close stdin so background SSH won't steal terminal input from
+        # prompt_toolkit (e.g. CPR responses), which causes typing lag.
+        return subprocess.run(
+            cmd, capture_output=True, text=True,
+            stdin=subprocess.DEVNULL,
+        )
     return subprocess.run(cmd)
 
 

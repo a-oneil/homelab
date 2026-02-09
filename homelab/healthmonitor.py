@@ -43,6 +43,7 @@ def _fetch_health_alerts():
             ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
              get_host(), cmd],
             capture_output=True, text=True, timeout=15,
+            stdin=_sp.DEVNULL,
         )
         if result.returncode != 0:
             return alerts
