@@ -2,6 +2,7 @@
 
 import subprocess
 
+from homelab.auditlog import log_action
 from homelab.config import CFG, save_config
 from homelab.ui import C, pick_option, prompt_text, info, success, warn
 
@@ -30,6 +31,13 @@ def _gather_hosts():
         port = str(CFG.get("homeassistant_ssh_port", "")).strip()
         hosts.append({"name": "Home Assistant", "host": ha_host, "port": port})
 
+    # Docker servers
+    for s in CFG.get("docker_servers", []):
+        entry = {"name": s.get("name", "?"), "host": s.get("host", "")}
+        if s.get("port"):
+            entry["port"] = s["port"]
+        hosts.append(entry)
+
     # Custom hosts from config
     for custom in CFG.get("ssh_hosts", []):
         hosts.append(custom)
@@ -54,12 +62,13 @@ def quick_connect_menu():
             "───────────────",
             "+ Add Custom Host",
             "- Remove Custom Host",
+            "SSH Keys             — generate, view, deploy keys",
             "← Back",
         ])
 
         idx = pick_option("Quick Connect:", choices)
 
-        if idx == len(hosts) + 3:  # Back
+        if idx == len(hosts) + 4:  # Back
             return
         elif idx == len(hosts):  # Separator
             continue
@@ -67,6 +76,9 @@ def quick_connect_menu():
             _add_custom_host()
         elif idx == len(hosts) + 2:  # Remove custom
             _remove_custom_host()
+        elif idx == len(hosts) + 3:  # SSH Keys
+            from homelab.sshkeys import ssh_key_menu
+            ssh_key_menu()
         elif idx < len(hosts):
             _connect(hosts[idx])
 
@@ -82,6 +94,7 @@ def _connect(host_info):
         cmd.extend(["-p", str(port)])
     cmd.append(host)
 
+    log_action("SSH Connect", f"{name} ({host})")
     info(f"Connecting to {name} ({host}" + (f" port {port}" if port else "") + ")...")
     subprocess.run(cmd)
 
@@ -104,6 +117,7 @@ def _add_custom_host():
     custom.append(entry)
     CFG["ssh_hosts"] = custom
     save_config(CFG)
+    log_action("SSH Host Add", f"{name} ({host})")
     success(f"Added: {name} ({host})")
 
 
@@ -123,4 +137,5 @@ def _remove_custom_host():
     removed = custom.pop(idx)
     CFG["ssh_hosts"] = custom
     save_config(CFG)
+    log_action("SSH Host Remove", f"{removed['name']} ({removed['host']})")
     success(f"Removed: {removed['name']}")

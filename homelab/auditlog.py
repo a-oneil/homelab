@@ -43,18 +43,22 @@ def audit_log_menu():
     """View and search the audit log."""
     while True:
         idx = pick_option("Audit Log:", [
-            "View Recent        — last 50 actions",
+            "View Recent         — last 50 actions",
             "Search Log          — find actions by keyword",
+            "Transfer History    — past file transfers",
             "Clear Log           — delete all entries",
             "← Back",
         ])
-        if idx == 3:
+        if idx == 4:
             return
         elif idx == 0:
             _view_recent()
         elif idx == 1:
             _search_log()
         elif idx == 2:
+            from homelab.files import show_history
+            show_history()
+        elif idx == 3:
             _clear_log()
 
 

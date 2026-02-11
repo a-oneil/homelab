@@ -4,9 +4,10 @@ import subprocess
 import sys
 import time
 
+from homelab.auditlog import log_action
 from homelab.config import CFG, save_config
 from homelab.plugins import Plugin
-from homelab.ui import C, pick_option, info, error, warn, bar_chart
+from homelab.ui import C, pick_option, info, error, warn, bar_chart, sparkline
 
 
 class SpeedtestPlugin(Plugin):
@@ -150,6 +151,7 @@ def _run_local_test():
         return
 
     entry = _save_result(parsed)
+    log_action("Speedtest Run", f"Down: {parsed['download']:.1f} Mbps, Up: {parsed['upload']:.1f} Mbps, Ping: {parsed['ping']:.1f} ms")
     _print_result(entry)
     input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
 
@@ -209,6 +211,25 @@ def _view_history():
         avg_ping = sum(e["ping"] for e in recent) / len(recent)
         lines.append(f"\n  {C.BOLD}Recent Average (last {len(recent)}):{C.RESET}")
         lines.append(f"  Down: {avg_dl:.1f} Mbps  Up: {avg_ul:.1f} Mbps  Ping: {avg_ping:.1f} ms")
+
+    # Sparkline chart
+    chart_data = history[-20:]
+    if len(chart_data) >= 2:
+        dl_vals = [e.get("download", 0) for e in chart_data]
+        ul_vals = [e.get("upload", 0) for e in chart_data]
+        ping_vals = [e.get("ping", 0) for e in chart_data]
+        # Invert ping (lower is better = taller bar)
+        max_ping = max(ping_vals) if ping_vals else 1
+        ping_inverted = [max_ping - v for v in ping_vals]
+
+        avg_dl = sum(dl_vals) / len(dl_vals)
+        avg_ul = sum(ul_vals) / len(ul_vals)
+        avg_ping = sum(ping_vals) / len(ping_vals)
+
+        lines.append(f"\n  {C.BOLD}Speed Trends{C.RESET} (last {len(chart_data)} tests)\n")
+        lines.append(f"  {C.GREEN}Download  {sparkline(dl_vals, width=20)}{C.RESET}  avg {avg_dl:.1f} Mbps")
+        lines.append(f"  {C.ACCENT}Upload    {sparkline(ul_vals, width=20)}{C.RESET}  avg {avg_ul:.1f} Mbps")
+        lines.append(f"  {C.YELLOW}Ping      {sparkline(ping_inverted, width=20)}{C.RESET}  avg {avg_ping:.1f} ms")
 
     lines.append("")
     header = "\n".join(lines)

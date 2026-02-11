@@ -20,7 +20,7 @@ _SENSITIVE_KEYS = {
     "proxmox_api_token", "unifi_password",
     "opnsense_api_key", "opnsense_api_secret",
     "homeassistant_token", "uptimekuma_password",
-    "npm_password", "forgejo_token",
+    "npm_password", "forgejo_token", "github_token",
     "immich_api_key", "syncthing_api_key",
     "sonarr_api_key", "radarr_api_key", "lidarr_api_key",
     "discord_webhook_url",
@@ -37,7 +37,7 @@ DEFAULT_CONFIG = {
     "favorites": [],
     "notifications": True,
     "dry_run": False,
-    "accent_color": "#5f9ea0",
+    "accent_color": "#bd93f9",
     "disk_space_warn_gb": 5,
     "discord_webhook_url": "",
     # Unraid plugin
@@ -97,6 +97,8 @@ DEFAULT_CONFIG = {
     # Forgejo plugin
     "forgejo_url": "",
     "forgejo_token": "",
+    # GitHub plugin
+    "github_token": "",
     # Immich plugin
     "immich_url": "",
     "immich_api_key": "",
@@ -112,16 +114,24 @@ DEFAULT_CONFIG = {
     # Lidarr plugin
     "lidarr_url": "",
     "lidarr_api_key": "",
+    # Ansible plugin
+    "ansible_ssh_host": "",
+    "ansible_playbook_path": "",
+    "ansible_inventory_path": "",
     # Speedtest
     "speedtest_history": [],
     # Watch folders
     "watch_folders": [],
+    # Scheduled tasks
+    "scheduled_tasks": [],
     # Session restore
     "session_last_menu": "",
     # Theme
     "theme": "default",
     # Quick Connect custom SSH hosts
     "ssh_hosts": [],
+    # Generic Docker/Linux servers
+    "docker_servers": [],
 }
 
 # Key renames from stashrc -> homelabrc

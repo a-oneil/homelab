@@ -5,9 +5,10 @@ import shutil
 import threading
 
 import questionary
+from prompt_toolkit.formatted_text import ANSI as PTK_ANSI, to_formatted_text
 from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
 from prompt_toolkit.keys import Keys
-from questionary import Style
+from questionary import Choice, Style
 
 from homelab.config import CFG
 
@@ -53,6 +54,25 @@ STYLE = _build_style()
 
 ANSI_RE = re.compile(r"\033\[[0-9;]*m")
 
+
+class _ANSITitle(list):
+    """List of (style, text) tuples with .lower() for questionary search filter.
+
+    Subclasses list so questionary sees it as iterable formatted text for display,
+    while .lower() satisfies the search filter's string expectation.
+    """
+
+    def __init__(self, formatted_text, plain_text):
+        super().__init__(formatted_text)
+        self._plain = plain_text
+
+    def __pt_formatted_text__(self):
+        return self
+
+    def lower(self):
+        return self._plain.lower()
+
+
 # Thread-local flag: when set, print helpers become no-ops.
 # Used by background threads to prevent corrupting the interactive prompt.
 _tlocal = threading.local()
@@ -96,6 +116,19 @@ def clear_screen():
     print("\033[2J\033[H", end="", flush=True)
 
 
+def _make_choices(options):
+    """Build questionary Choice list preserving ANSI colors in display."""
+    choices = []
+    for o in options:
+        clean = strip_ansi(o)
+        if ANSI_RE.search(o):
+            ft = to_formatted_text(PTK_ANSI(o))
+            choices.append(Choice(title=_ANSITitle(ft, clean), value=clean))
+        else:
+            choices.append(Choice(title=clean, value=clean))
+    return choices
+
+
 def pick_option(prompt, options, header=""):
     """Arrow-key select with type-to-filter. Returns selected index."""
     clear_screen()
@@ -108,7 +141,7 @@ def pick_option(prompt, options, header=""):
 
     question = questionary.select(
         clean_prompt,
-        choices=clean_options,
+        choices=_make_choices(options),
         style=STYLE,
         use_shortcuts=False,
         use_indicator=True,
@@ -166,7 +199,7 @@ def pick_option(prompt, options, header=""):
     return clean_options.index(result)
 
 
-def pick_multi(prompt, options, header=""):
+def pick_multi(prompt, options, header="", preselected=None):
     """Multi-select with checkboxes. Returns list of selected indices."""
     clear_screen()
     if header:
@@ -175,8 +208,16 @@ def pick_multi(prompt, options, header=""):
     clean_options = [strip_ansi(o) for o in options]
     if not clean_options:
         return []
+    pre_set = set(preselected) if preselected else set()
+    choices = []
+    for i, o in enumerate(clean_options):
+        raw = options[i]
+        if ANSI_RE.search(raw):
+            choices.append(Choice(title=to_formatted_text(PTK_ANSI(raw)), value=o, checked=(i in pre_set)))
+        else:
+            choices.append(Choice(title=o, value=o, checked=(i in pre_set)))
     question = questionary.checkbox(
-        clean_prompt, choices=clean_options, style=STYLE,
+        clean_prompt, choices=choices, style=STYLE,
         use_jk_keys=False,
         instruction="(↑↓ navigate, Space toggle, Enter confirm, Ctrl-G cancel)",
     )
@@ -231,6 +272,30 @@ def bar_chart(used, total, width=30):
     else:
         color = C.GREEN
     return f"{color}[{'█' * filled}{'░' * empty}]{C.RESET} {pct * 100:.0f}%"
+
+
+def sparkline(values, width=None):
+    """Return a sparkline string like ▁▃▅▇█ for a list of numeric values."""
+    if not values:
+        return ""
+    blocks = "▁▂▃▄▅▆▇█"
+    if width:
+        # Pad with zeros if fewer values than width
+        if len(values) < width:
+            values = [0.0] * (width - len(values)) + values
+        values = values[-width:]
+    mn, mx = min(values), max(values)
+    if mx == mn:
+        # All same value — show level proportional to absolute magnitude (0-100 scale)
+        level = 0 if mx == 0 else min(7, int(mx / 100 * 7))
+        return blocks[level] * len(values)
+    rng = mx - mn
+    chars = []
+    for v in values:
+        idx = int((v - mn) / rng * 7)
+        idx = max(0, min(7, idx))
+        chars.append(blocks[idx])
+    return "".join(chars)
 
 
 def scrollable_list(title, rows, header_line=""):

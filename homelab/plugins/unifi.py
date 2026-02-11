@@ -3,12 +3,14 @@
 import http.cookiejar
 import json
 import ssl
+import subprocess
 import time
 import urllib.request
 
 from homelab.config import CFG
+from homelab.auditlog import log_action
 from homelab.plugins import Plugin
-from homelab.ui import C, pick_option, scrollable_list, prompt_text, confirm, success, error, warn
+from homelab.ui import C, pick_option, confirm, prompt_text, info, success, error, warn
 
 _HEADER_CACHE = {"timestamp": 0, "stats": ""}
 _CACHE_TTL = 300
@@ -45,7 +47,7 @@ def _get_session():
         return None, None
 
 
-def _api_get(opener, base, endpoint):
+def _api_get(opener, base, endpoint, silent=False):
     """Make an authenticated GET request."""
     site = CFG.get("unifi_site", "default")
     url = f"{base}/api/s/{site}/{endpoint}"
@@ -54,7 +56,8 @@ def _api_get(opener, base, endpoint):
         with opener.open(req, timeout=10) as resp:
             return json.loads(resp.read().decode())
     except Exception as e:
-        error(f"UniFi API error: {e}")
+        if not silent:
+            error(f"UniFi API error: {e}")
         return None
 
 
@@ -64,6 +67,20 @@ def _api_post(opener, base, endpoint, data):
     url = f"{base}/api/s/{site}/{endpoint}"
     payload = json.dumps(data).encode()
     req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+    try:
+        with opener.open(req, timeout=10) as resp:
+            return json.loads(resp.read().decode())
+    except Exception as e:
+        error(f"UniFi API error: {e}")
+        return None
+
+
+def _api_put(opener, base, endpoint, data):
+    """Make an authenticated PUT request."""
+    site = CFG.get("unifi_site", "default")
+    url = f"{base}/api/s/{site}/{endpoint}"
+    payload = json.dumps(data).encode()
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="PUT")
     try:
         with opener.open(req, timeout=10) as resp:
             return json.loads(resp.read().decode())
@@ -85,6 +102,7 @@ class UnifiPlugin(Plugin):
             ("unifi_username", "UniFi Username", "", False),
             ("unifi_password", "UniFi Password", "", True),
             ("unifi_site", "UniFi Site", "default", False),
+            ("unifi_ssh_user", "Device SSH User", "admin", False),
         ]
 
     def get_header_stats(self):
@@ -92,19 +110,63 @@ class UnifiPlugin(Plugin):
             _fetch_stats()
         return _HEADER_CACHE.get("stats") or None
 
+    def get_dashboard_widgets(self):
+        try:
+            opener, base = _get_session()
+            if not opener:
+                return []
+            lines = []
+            sta = _api_get(opener, base, "stat/sta", silent=True)
+            if sta and sta.get("data"):
+                lines.append(f"{len(sta['data'])} clients connected")
+            dev = _api_get(opener, base, "stat/device", silent=True)
+            if dev and dev.get("data"):
+                devices = dev["data"]
+                type_counts = {}
+                for d in devices:
+                    dtype = d.get("type", "unknown")
+                    type_counts[dtype] = type_counts.get(dtype, 0) + 1
+                parts = []
+                type_labels = {"uap": "APs", "usw": "switches", "ugw": "gateways", "udm": "gateways"}
+                for t, c in type_counts.items():
+                    label = type_labels.get(t, t)
+                    parts.append(f"{c} {label}")
+                lines.append(f"{len(devices)} devices ({', '.join(parts)})")
+            if not lines:
+                return []
+            return [{"title": "UniFi", "lines": lines}]
+        except Exception:
+            return []
+
+    def get_health_alerts(self):
+        try:
+            opener, base = _get_session()
+            if not opener:
+                return [f"{C.RED}UniFi:{C.RESET} unreachable"]
+            alerts = []
+            dev = _api_get(opener, base, "stat/device", silent=True)
+            if dev and dev.get("data"):
+                for d in dev["data"]:
+                    name = d.get("name", d.get("model", "?"))
+                    if not d.get("adopted", True):
+                        alerts.append(f"{C.YELLOW}UniFi:{C.RESET} {name} pending adoption")
+                    elif d.get("state", 1) != 1:
+                        alerts.append(f"{C.RED}UniFi:{C.RESET} {name} disconnected")
+            return alerts
+        except Exception:
+            return [f"{C.RED}UniFi:{C.RESET} unreachable"]
+
     def get_menu_items(self):
         return [
-            ("UniFi                — network clients and devices", unifi_menu),
+            ("UniFi                \u2014 network clients and devices", unifi_menu),
         ]
 
     def get_actions(self):
         return {
             "UniFi Clients": ("unifi_clients", _show_clients),
             "UniFi Devices": ("unifi_devices", _show_devices),
-            "UniFi Bandwidth": ("unifi_bandwidth", _bandwidth_stats),
-            "UniFi Search": ("unifi_search", _search_client),
-            "UniFi Block/Unblock": ("unifi_block", _block_unblock_client),
-            "UniFi Restart Device": ("unifi_restart", _restart_device),
+            "UniFi Wireless": ("unifi_wireless", _wireless_analysis),
+            "UniFi Firmware": ("unifi_firmware", _firmware_updates),
         }
 
 
@@ -122,21 +184,19 @@ def _fetch_stats():
 def unifi_menu():
     while True:
         idx = pick_option("UniFi:", [
-            "Active Clients        — connected devices with IP, uptime, signal",
-            "Network Devices       — APs, switches, gateways",
-            "Bandwidth             — client traffic sorted by usage",
-            "Search Client         — find device by name or MAC",
-            "Block/Unblock Client  — restrict network access",
-            "Restart Device        — reboot an AP, switch, or gateway",
-            "───────────────",
-            "★ Add to Favorites   — pin an action to the main menu",
-            "← Back",
+            "Clients               \u2014 active devices, bandwidth, block/unblock",
+            "Network Devices       \u2014 APs, switches, gateways",
+            "Wireless Analysis     \u2014 RF environment per AP",
+            "Firmware Updates      \u2014 check and apply device updates",
+            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+            "\u2605 Add to Favorites   \u2014 pin an action to the main menu",
+            "\u2190 Back",
         ])
-        if idx == 8:
+        if idx == 6:
             return
-        elif idx == 6:
+        elif idx == 4:
             continue
-        elif idx == 7:
+        elif idx == 5:
             from homelab.plugins import add_plugin_favorite
             add_plugin_favorite(UnifiPlugin())
         elif idx == 0:
@@ -144,13 +204,9 @@ def unifi_menu():
         elif idx == 1:
             _show_devices()
         elif idx == 2:
-            _bandwidth_stats()
+            _wireless_analysis()
         elif idx == 3:
-            _search_client()
-        elif idx == 4:
-            _block_unblock_client()
-        elif idx == 5:
-            _restart_device()
+            _firmware_updates()
 
 
 def _format_uptime(seconds):
@@ -177,6 +233,7 @@ def _format_bytes(b):
 
 
 def _show_clients():
+    sort_by = "ip"
     while True:
         opener, base = _get_session()
         if not opener:
@@ -185,33 +242,151 @@ def _show_clients():
         data = _api_get(opener, base, "stat/sta")
         if not data or not data.get("data"):
             warn("No active clients found.")
+            input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
             return
 
-        clients = sorted(data["data"], key=lambda c: c.get("hostname", c.get("name", "zzz")))
+        all_clients = data["data"]
+        if sort_by == "bandwidth":
+            all_clients = sorted(all_clients, key=lambda c: c.get("tx_bytes", 0) + c.get("rx_bytes", 0), reverse=True)
+        elif sort_by == "ip":
+            all_clients = sorted(all_clients, key=lambda c: tuple(
+                int(p) for p in c.get("ip", "0.0.0.0").split(".") if p.isdigit()
+            ))
+        else:
+            all_clients = sorted(all_clients, key=lambda c: c.get("hostname", c.get("name", "zzz")).lower())
 
         choices = []
-        for c in clients:
+        clients = []
+        for c in all_clients:
             hostname = c.get("hostname", c.get("name", "?"))[:20]
             ip = c.get("ip", "?")
-            mac = c.get("mac", "?")
             uptime = _format_uptime(c.get("uptime"))
-            signal = f"{c.get('signal', '?')} dBm" if c.get("signal") else "wired"
+            blocked = c.get("blocked", False)
+            sig = c.get("signal")
+            if blocked:
+                dot = f"{C.RED}\u25cf{C.RESET}"
+            elif sig:
+                dot = f"{C.CYAN}\u25cf{C.RESET}"
+            else:
+                dot = f"{C.GREEN}\u25cf{C.RESET}"
+            if sig:
+                sig_val = int(sig)
+                sig_color = C.GREEN if sig_val > -50 else C.YELLOW if sig_val > -70 else C.RED
+                signal = f"{sig_color}{sig} dBm{C.RESET}"
+            else:
+                signal = f"{C.DIM}wired{C.RESET}"
             tx = c.get("tx_bytes", 0)
             rx = c.get("rx_bytes", 0)
             bw = ""
             if tx or rx:
-                bw = f"  {C.DIM}↓{_format_bytes(rx)} ↑{_format_bytes(tx)}{C.RESET}"
-            choices.append(f"{hostname:<22} {ip:<16} {mac:<18} {uptime:<10} {signal}{bw}")
+                bw = f"  {C.DIM}\u2193{_format_bytes(rx)} \u2191{_format_bytes(tx)}{C.RESET}"
+            blocked_tag = f"  {C.RED}BLOCKED{C.RESET}" if blocked else ""
+            choices.append(f"{dot} {hostname:<22} {ip:<16} {uptime:<10} {signal}{bw}{blocked_tag}")
+            clients.append(c)
 
-        count = len(choices)
-        choices.append("───────────────")
-        choices.append("↻ Refresh")
-        choices.append("← Back")
+        client_count = len(choices)
+        sort_next = {"name": "ip", "ip": "bandwidth", "bandwidth": "name"}
+        sort_label = f"Sort: by {sort_next[sort_by]}  {C.DIM}(current: {sort_by}){C.RESET}"
+        choices.append("\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
+        choices.append(sort_label)
+        choices.append("\u21bb Refresh")
+        choices.append("\u2190 Back")
 
-        idx = pick_option(f"Clients ({count}):", choices)
-        if idx <= count or idx == count + 1:
+        idx = pick_option(f"Clients ({client_count}):", choices)
+
+        sep_idx = client_count
+        sort_idx = client_count + 1
+        refresh_idx = client_count + 2
+        back_idx = client_count + 3
+
+        if idx == back_idx:
+            return
+        elif idx == sep_idx:
             continue
+        elif idx == sort_idx:
+            sort_by = sort_next[sort_by]
+        elif idx == refresh_idx:
+            continue
+        elif idx < client_count:
+            _client_detail(clients[idx], opener, base)
+
+
+def _client_detail(client, opener, base):
+    """Show detail and actions for a client."""
+    hostname = client.get("hostname", "?")
+    alias = client.get("name", "")
+    display_name = alias or hostname
+    ip = client.get("ip", "?")
+    mac = client.get("mac", "?")
+    user_id = client.get("_id", "")
+    uptime = _format_uptime(client.get("uptime"))
+    blocked = client.get("blocked", False)
+    sig = client.get("signal")
+    tx = client.get("tx_bytes", 0)
+    rx = client.get("rx_bytes", 0)
+
+    print(f"\n  {C.BOLD}{display_name}{C.RESET}")
+    if alias and alias != hostname:
+        print(f"  {C.BOLD}Hostname:{C.RESET}  {hostname}")
+    if alias:
+        print(f"  {C.BOLD}Alias:{C.RESET}     {C.ACCENT}{alias}{C.RESET}")
+    print(f"  {C.BOLD}IP:{C.RESET}        {ip}")
+    print(f"  {C.BOLD}MAC:{C.RESET}       {mac}")
+    print(f"  {C.BOLD}Uptime:{C.RESET}    {uptime}")
+    if sig:
+        print(f"  {C.BOLD}Signal:{C.RESET}    {sig} dBm")
+    else:
+        print(f"  {C.BOLD}Connection:{C.RESET} wired")
+    if tx or rx:
+        print(f"  {C.BOLD}Traffic:{C.RESET}   {C.GREEN}\u2193{C.RESET} {_format_bytes(rx)}  {C.ACCENT}\u2191{C.RESET} {_format_bytes(tx)}")
+    if blocked:
+        print(f"  {C.BOLD}Status:{C.RESET}    {C.RED}BLOCKED{C.RESET}")
+
+    block_label = "Unblock client" if blocked else "Block client"
+    alias_label = f"Set alias             \u2014 currently '{alias}'" if alias else "Set alias"
+    aidx = pick_option(f"{display_name}:", [
+        alias_label,
+        block_label,
+        "\u2190 Back",
+    ])
+    if aidx == 2:
         return
+    elif aidx == 0:
+        _set_alias(client, opener, base, display_name, user_id)
+    elif aidx == 1:
+        if blocked:
+            action, cmd = "unblock", "unblock-sta"
+        else:
+            action, cmd = "block", "block-sta"
+        if not confirm(f"{action.title()} '{display_name}' ({mac})?", default_yes=False):
+            return
+        result = _api_post(opener, base, "cmd/stamgr", {"cmd": cmd, "mac": mac})
+        if result is not None:
+            log_action(f"UniFi {action.title()} Client", display_name)
+            success(f"Client {action}ed: {display_name}")
+        else:
+            error(f"Failed to {action} client.")
+
+
+def _set_alias(client, opener, base, display_name, user_id):
+    """Set or clear a client alias."""
+    current = client.get("name", "")
+    new_alias = prompt_text(f"Alias for {display_name}:", default=current)
+    if new_alias is None:
+        return
+    new_alias = new_alias.strip()
+    if new_alias == current:
+        return
+    if not user_id:
+        error("Cannot set alias: client ID not found.")
+        return
+    result = _api_put(opener, base, f"rest/user/{user_id}", {"name": new_alias})
+    if result is not None:
+        label = f"'{new_alias}'" if new_alias else "cleared"
+        log_action("UniFi Set Alias", f"{display_name} \u2192 {label}")
+        success(f"Alias {label} for {display_name}")
+    else:
+        error("Failed to set alias.")
 
 
 def _show_devices():
@@ -226,14 +401,26 @@ def _show_devices():
             return
 
         devices = data["data"]
+        type_labels = {"uap": "AP", "usw": "Switch", "ugw": "Gateway", "udm": "Gateway"}
         choices = []
         for d in devices:
             name = d.get("name", d.get("model", "?"))
             dtype = d.get("type", "?")
             ip = d.get("ip", "?")
-            status = "adopted" if d.get("adopted") else "pending"
             uptime = _format_uptime(d.get("uptime"))
-            choices.append(f"{name:<20} ({dtype})  IP: {ip}  {status}  Up: {uptime}")
+            adopted = d.get("adopted", False)
+            state = d.get("state", 0)
+            if not adopted:
+                dot = f"{C.YELLOW}\u25cf{C.RESET}"
+                status = f"{C.YELLOW}pending{C.RESET}"
+            elif state == 1:
+                dot = f"{C.GREEN}\u25cf{C.RESET}"
+                status = f"{C.GREEN}online{C.RESET}"
+            else:
+                dot = f"{C.RED}\u25cf{C.RESET}"
+                status = f"{C.RED}offline{C.RESET}"
+            tlabel = type_labels.get(dtype, dtype)
+            choices.append(f"{dot} {name:<20} {C.DIM}{tlabel:<8}{C.RESET} {ip:<16} {status}  {C.DIM}Up: {uptime}{C.RESET}")
 
         count = len(choices)
         choices.append("───────────────")
@@ -241,173 +428,264 @@ def _show_devices():
         choices.append("← Back")
 
         idx = pick_option(f"Network Devices ({count}):", choices)
-        if idx <= count or idx == count + 1:
+        if idx == count:
             continue
-        return
-
-
-def _bandwidth_stats():
-    """Show clients sorted by bandwidth usage."""
-    while True:
-        opener, base = _get_session()
-        if not opener:
-            return
-
-        data = _api_get(opener, base, "stat/sta")
-        if not data or not data.get("data"):
-            warn("No active clients found.")
-            return
-
-        clients = data["data"]
-        clients.sort(key=lambda c: (c.get("tx_bytes", 0) + c.get("rx_bytes", 0)), reverse=True)
-
-        choices = []
-        for c in clients:
-            hostname = c.get("hostname", c.get("name", "?"))[:20]
-            tx = c.get("tx_bytes", 0)
-            rx = c.get("rx_bytes", 0)
-            total = tx + rx
-            if total == 0:
-                continue
-            choices.append(
-                f"{hostname:<22} {C.GREEN}↓{C.RESET}{_format_bytes(rx):>10}  "
-                f"{C.ACCENT}↑{C.RESET}{_format_bytes(tx):>10}  "
-                f"Total: {_format_bytes(total)}"
-            )
-
-        if not choices:
-            warn("No bandwidth data available.")
-            return
-
-        count = len(choices)
-        choices.append("───────────────")
-        choices.append("↻ Refresh")
-        choices.append("← Back")
-
-        idx = pick_option(f"Bandwidth ({count} clients):", choices)
-        if idx <= count or idx == count + 1:
+        elif idx == count + 1:
             continue
+        elif idx == count + 2:
+            return
+        elif idx < count:
+            _device_detail(devices[idx], opener, base)
+
+
+def _device_detail(device, opener, base):
+    """Show detail and actions for a network device."""
+    name = device.get("name", device.get("model", "?"))
+    dtype = device.get("type", "?")
+    ip = device.get("ip", "?")
+    mac = device.get("mac", "?")
+    model = device.get("model", "?")
+    version = device.get("version", "?")
+    uptime = _format_uptime(device.get("uptime"))
+
+    type_labels = {"uap": "Access Point", "usw": "Switch", "ugw": "Gateway", "udm": "Dream Machine"}
+    type_label = type_labels.get(dtype, dtype)
+
+    print(f"\n  {C.BOLD}{name}{C.RESET}  ({type_label})")
+    print(f"  {C.BOLD}IP:{C.RESET}       {ip}")
+    print(f"  {C.BOLD}MAC:{C.RESET}      {mac}")
+    print(f"  {C.BOLD}Model:{C.RESET}    {model}")
+    print(f"  {C.BOLD}Firmware:{C.RESET} {version}")
+    print(f"  {C.BOLD}Uptime:{C.RESET}   {uptime}")
+
+    upgradable = device.get("upgradable", False)
+    upgrade_to = device.get("upgrade_to_firmware", "")
+    if upgradable:
+        print(f"  {C.YELLOW}Update available: {upgrade_to}{C.RESET}")
+
+    ssh_user = CFG.get("unifi_ssh_user", "admin")
+
+    action_items = [
+        f"SSH to device          \u2014 ssh {ssh_user}@{ip}",
+        "Restart device         \u2014 reboot this device",
+    ]
+    if dtype in ("usw",):
+        action_items.append("Port Stats             \u2014 per-port link state and traffic")
+    if upgradable:
+        action_items.append(f"Upgrade Firmware       \u2014 update to {upgrade_to}")
+    action_items.append("\u2190 Back")
+
+    aidx = pick_option(f"{name}:", action_items)
+    action = action_items[aidx]
+
+    if action.startswith("\u2190"):
         return
+    elif action.startswith("SSH"):
+        log_action("UniFi SSH to Device", f"{name} ({ip})")
+        info(f"Connecting to {name} ({ip})... type 'exit' to quit.")
+        try:
+            subprocess.run(["ssh", "-o", "StrictHostKeyChecking=no", f"{ssh_user}@{ip}"])
+        except KeyboardInterrupt:
+            print()
+    elif action.startswith("Restart"):
+        if not confirm(f"Restart '{name}'? Device will be briefly offline.", default_yes=False):
+            return
+        result = _api_post(opener, base, "cmd/devmgr", {"cmd": "restart", "mac": mac})
+        if result is not None:
+            log_action("UniFi Restart Device", name)
+            success(f"Restart initiated: {name}")
+        else:
+            error("Failed to restart device.")
+    elif action.startswith("Port Stats"):
+        _switch_port_stats(device)
+    elif action.startswith("Upgrade"):
+        if confirm(f"Upgrade {name} to firmware {upgrade_to}?", default_yes=False):
+            result = _api_post(opener, base, "cmd/devmgr", {"cmd": "upgrade", "mac": mac})
+            if result is not None:
+                log_action("UniFi Firmware Upgrade", f"{name} \u2192 {upgrade_to}")
+                success(f"Firmware upgrade initiated: {name}")
+            else:
+                error("Failed to trigger firmware upgrade.")
 
 
-def _block_unblock_client():
-    """Block or unblock a client device."""
-    opener, base = _get_session()
-    if not opener:
-        return
+# ─── Wireless Analysis ────────────────────────────────────────────────────
 
-    data = _api_get(opener, base, "stat/sta")
-    if not data or not data.get("data"):
-        warn("No active clients found.")
-        return
-
-    clients = sorted(data["data"], key=lambda c: c.get("hostname", c.get("name", "zzz")))
-    choices = []
-    for c in clients:
-        hostname = c.get("hostname", c.get("name", "?"))[:20]
-        ip = c.get("ip", "?")
-        mac = c.get("mac", "?")
-        blocked = c.get("blocked", False)
-        status = f"  {C.RED}BLOCKED{C.RESET}" if blocked else ""
-        choices.append(f"{hostname:<22} {ip:<16} {mac:<18}{status}")
-
-    choices.append("← Back")
-    idx = pick_option("Select client to block/unblock:", choices)
-    if idx >= len(clients):
-        return
-
-    client = clients[idx]
-    mac = client.get("mac", "")
-    hostname = client.get("hostname", client.get("name", mac))
-    is_blocked = client.get("blocked", False)
-
-    if is_blocked:
-        action = "unblock"
-        cmd = "unblock-sta"
-    else:
-        action = "block"
-        cmd = "block-sta"
-
-    if not confirm(f"{action.title()} '{hostname}' ({mac})?", default_yes=False):
-        return
-
-    result = _api_post(opener, base, "cmd/stamgr", {"cmd": cmd, "mac": mac})
-    if result is not None:
-        success(f"Client {action}ed: {hostname}")
-    else:
-        error(f"Failed to {action} client.")
-
-
-def _restart_device():
-    """Restart a network device (AP, switch, gateway)."""
+def _wireless_analysis():
+    """Show RF environment for each access point."""
     opener, base = _get_session()
     if not opener:
         return
 
     data = _api_get(opener, base, "stat/device")
     if not data or not data.get("data"):
-        warn("No network devices found.")
+        warn("No devices found.")
         return
 
-    devices = data["data"]
-    choices = []
-    for d in devices:
-        name = d.get("name", d.get("model", "?"))
-        dtype = d.get("type", "?")
-        ip = d.get("ip", "?")
-        uptime = _format_uptime(d.get("uptime"))
-        choices.append(f"{name:<20} ({dtype})  IP: {ip}  Up: {uptime}")
-
-    choices.append("← Back")
-    idx = pick_option("Select device to restart:", choices)
-    if idx >= len(devices):
+    aps = [d for d in data["data"] if d.get("type") in ("uap",)]
+    if not aps:
+        warn("No access points found.")
+        input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
         return
 
-    device = devices[idx]
-    mac = device.get("mac", "")
-    name = device.get("name", device.get("model", mac))
+    print(f"\n  {C.BOLD}Wireless Analysis{C.RESET}  ({len(aps)} APs)\n")
 
-    if not confirm(f"Restart '{name}' ({mac})? Device will be briefly offline.", default_yes=False):
+    for ap in aps:
+        ap_name = ap.get("name", ap.get("model", "?"))
+        print(f"  {C.BOLD}{ap_name}{C.RESET}")
+
+        radio_table = ap.get("radio_table", [])
+        radio_stats = ap.get("radio_table_stats", [])
+
+        stats_map = {}
+        for rs in radio_stats:
+            radio_name = rs.get("name", "")
+            stats_map[radio_name] = rs
+
+        for radio in radio_table:
+            radio_name = radio.get("name", "?")
+            channel = radio.get("channel", "?")
+            ht = radio.get("ht", "?")
+            tx_power = radio.get("tx_power_mode", "auto")
+
+            rs = stats_map.get(radio_name, {})
+            cu_total = rs.get("cu_total", 0)
+            cu_self_rx = rs.get("cu_self_rx", 0)
+            cu_self_tx = rs.get("cu_self_tx", 0)
+            satisfaction = rs.get("satisfaction", 0)
+            num_sta = rs.get("num_sta", 0)
+
+            if cu_total > 80:
+                util_color = C.RED
+            elif cu_total > 50:
+                util_color = C.YELLOW
+            else:
+                util_color = C.GREEN
+
+            band = "5GHz" if isinstance(channel, int) and channel > 14 else "2.4GHz"
+            print(f"    {radio_name} ({band}) ch{channel} {ht}MHz")
+            print(f"      Clients: {num_sta}  Satisfaction: {satisfaction}%")
+            print(
+                f"      Utilization: {util_color}{cu_total}%{C.RESET}  "
+                f"(self tx: {cu_self_tx}%, self rx: {cu_self_rx}%)")
+            print(f"      Tx power: {tx_power}")
+
+        print()
+
+    input(f"  {C.DIM}Press Enter to continue...{C.RESET}")
+
+
+# ─── Switch Port Stats ────────────────────────────────────────────────────
+
+def _switch_port_stats(device):
+    """Show per-port statistics for a switch."""
+    name = device.get("name", "?")
+    port_table = device.get("port_table", [])
+
+    if not port_table:
+        warn("No port data available.")
+        input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
         return
 
-    result = _api_post(opener, base, "cmd/devmgr", {"cmd": "restart", "mac": mac})
-    if result is not None:
-        success(f"Restart initiated: {name}")
-    else:
-        error("Failed to restart device.")
+    print(f"\n  {C.BOLD}{name} \u2014 Switch Ports{C.RESET}\n")
+    print(
+        f"  {C.DIM}{'Port':<6} {'Name':<16} {'Link':<8} {'Speed':<12} "
+        f"{'Rx':>12} {'Tx':>12} {'PoE':>6}{C.RESET}")
+    print(f"  {'─' * 76}")
+
+    for port in sorted(port_table, key=lambda p: p.get("port_idx", 0)):
+        port_idx = port.get("port_idx", "?")
+        port_name = port.get("name", "")
+        is_up = port.get("up", False)
+        speed = port.get("speed", 0)
+        rx = port.get("rx_bytes", 0)
+        tx = port.get("tx_bytes", 0)
+        poe_enable = port.get("poe_enable", False)
+        poe_power = port.get("poe_power", "")
+
+        if is_up:
+            link_str = f"{C.GREEN}UP{C.RESET}"
+            speed_str = f"{speed} Mbps" if speed else "?"
+        else:
+            link_str = f"{C.DIM}down{C.RESET}"
+            speed_str = f"{C.DIM}--{C.RESET}"
+
+        poe_str = f"{poe_power}W" if poe_enable and poe_power else f"{C.DIM}--{C.RESET}"
+
+        print(
+            f"  {str(port_idx):<6} {port_name:<16} {link_str:<8} {speed_str:<12} "
+            f"{_format_bytes(rx):>12} {_format_bytes(tx):>12} {poe_str:>6}")
+
+    print()
+    input(f"  {C.DIM}Press Enter to continue...{C.RESET}")
 
 
-def _search_client():
-    query = prompt_text("Search by hostname or MAC:")
-    if not query:
-        return
+# ─── Firmware Updates ─────────────────────────────────────────────────────
 
+def _firmware_updates():
+    """Check all UniFi devices for available firmware updates."""
     opener, base = _get_session()
     if not opener:
         return
 
-    data = _api_get(opener, base, "stat/sta")
+    data = _api_get(opener, base, "stat/device")
     if not data or not data.get("data"):
-        warn("No clients found.")
+        warn("No devices found.")
         return
 
-    query_lower = query.lower()
-    matches = [
-        c for c in data["data"]
-        if query_lower in c.get("hostname", "").lower()
-        or query_lower in c.get("name", "").lower()
-        or query_lower in c.get("mac", "").lower()
-    ]
+    devices = data["data"]
+    upgradable = [d for d in devices if d.get("upgradable", False)]
 
-    if not matches:
-        warn("No matching clients found.")
+    if not upgradable:
+        success("All devices are up to date.")
+        input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
         return
 
-    rows = []
-    for c in matches:
-        hostname = c.get("hostname", c.get("name", "?"))
-        ip = c.get("ip", "?")
-        mac = c.get("mac", "?")
-        rows.append(f"{hostname:<22} IP: {ip:<16} MAC: {mac}")
+    while True:
+        choices = []
+        for d in upgradable:
+            dev_name = d.get("name", d.get("model", "?"))
+            current = d.get("version", "?")
+            upgrade_to = d.get("upgrade_to_firmware", "?")
+            choices.append(f"{dev_name:<20} {current} \u2192 {C.GREEN}{upgrade_to}{C.RESET}")
 
-    scrollable_list(f"Search results ({len(rows)}):", rows)
+        choices.extend([
+            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+            "Upgrade All",
+            "\u2190 Back",
+        ])
+
+        hdr = f"\n  {C.BOLD}Firmware Updates{C.RESET}  ({len(upgradable)} device(s) with updates)\n"
+        idx = pick_option("", choices, header=hdr)
+
+        if choices[idx].startswith("\u2190"):
+            return
+        elif choices[idx].startswith("\u2500"):
+            continue
+        elif choices[idx] == "Upgrade All":
+            if confirm(f"Upgrade firmware on {len(upgradable)} device(s)?", default_yes=False):
+                for d in upgradable:
+                    dev_name = d.get("name", d.get("model", "?"))
+                    mac = d.get("mac", "")
+                    upgrade_to = d.get("upgrade_to_firmware", "?")
+                    info(f"Upgrading {dev_name}...")
+                    result = _api_post(opener, base, "cmd/devmgr", {"cmd": "upgrade", "mac": mac})
+                    if result is not None:
+                        log_action("UniFi Firmware Upgrade", f"{dev_name} \u2192 {upgrade_to}")
+                        success(f"  {dev_name}: upgrade initiated")
+                    else:
+                        error(f"  {dev_name}: upgrade failed")
+                input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
+                return
+        elif idx < len(upgradable):
+            d = upgradable[idx]
+            dev_name = d.get("name", d.get("model", "?"))
+            mac = d.get("mac", "")
+            upgrade_to = d.get("upgrade_to_firmware", "?")
+            if confirm(f"Upgrade {dev_name} to {upgrade_to}?", default_yes=False):
+                result = _api_post(opener, base, "cmd/devmgr", {"cmd": "upgrade", "mac": mac})
+                if result is not None:
+                    log_action("UniFi Firmware Upgrade", f"{dev_name} \u2192 {upgrade_to}")
+                    success(f"Upgrade initiated: {dev_name}")
+                else:
+                    error("Upgrade failed.")
+            input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")

@@ -11,12 +11,14 @@ import time
 from homelab.config import CFG, save_config, local_hostname
 from homelab.ui import (
     C, pick_option, pick_multi, confirm, prompt_text, info, success, error,
-    warn, check_tool,
+    warn, check_tool, clear_screen,
 )
 from homelab.transport import (
-    get_host, get_base, ssh_run, rsync_transfer, _check_disk_space,
+    ssh_run, rsync_transfer, _check_disk_space,
     list_remote_dirs, list_remote_items, format_item,
+    pick_rsync_options,
 )
+from homelab.auditlog import log_action
 from homelab.history import log_transfer
 from homelab.notifications import notify, copy_to_clipboard
 
@@ -35,39 +37,38 @@ FETCH_METHODS = [
     ("git clone", "git"),
     ("curl", "curl"),
     ("yt-dlp", "yt-dlp"),
-    ("Custom command", None),
 ]
 
 
 # ─── Browse Remote Folder (picker) ─────────────────────────────────────────
 
-def _is_at_root(current):
+def _is_at_root(current, base_path, extra_paths=None):
     """Check if current path is a navigation root (base or extra path)."""
-    if current == get_base():
+    if current == base_path:
         return True
-    for ep in CFG.get("unraid_extra_paths", []):
+    for ep in (extra_paths or []):
         if current == ep:
             return True
     return False
 
 
-def browse_remote_folder():
-    current = get_base()
-    info(f"Browsing folders on {get_host()}:{get_base()}")
+def browse_remote_folder(host, base_path, extra_paths=None, port=None):
+    current = base_path
+    info(f"Browsing folders on {host}:{base_path}")
 
     while True:
-        dirs = list_remote_dirs(current)
+        dirs = list_remote_dirs(current, host=host, port=port)
         dir_names = [os.path.basename(d) for d in dirs]
 
         choices = ["** Use this folder **"]
-        if not _is_at_root(current):
+        if not _is_at_root(current, base_path, extra_paths):
             choices.append(".. (go up)")
         if CFG["bookmarks"]:
             choices.append("★ Bookmarks")
         choices.append("★ Save bookmark")
         extra_labels = []
-        if current == get_base():
-            for ep in CFG.get("unraid_extra_paths", []):
+        if current == base_path:
+            for ep in (extra_paths or []):
                 label = f"[EXT]  {os.path.basename(ep)}/"
                 extra_labels.append((label, ep))
                 choices.append(label)
@@ -100,10 +101,11 @@ def browse_remote_folder():
             if not name:
                 continue
             new_path = os.path.join(current, name)
-            result = ssh_run(f"mkdir -p '{new_path}'")
+            result = ssh_run(f"mkdir -p '{new_path}'", host=host, port=port)
             if result.returncode != 0:
                 error(f"Failed to create folder: {result.stderr.strip()}")
             else:
+                log_action("Folder Create", f"{host}:{new_path}")
                 success(f"Created: {new_path}")
                 current = new_path
         else:
@@ -231,16 +233,8 @@ def fetch_files(method_name, tool, url, tmpdir):
     elif tool == "yt-dlp":
         cmd = ["yt-dlp", "-o", os.path.join(tmpdir, "%(title)s.%(ext)s"), url]
     else:
-        info(f"Working directory: {tmpdir}")
-        custom = prompt_text("Enter the full command to run:")
-        if not custom:
-            error("No command entered.")
-            return False
-        result = subprocess.run(custom, shell=True, cwd=tmpdir)
-        if result.returncode != 0:
-            error(f"Command exited with code {result.returncode}")
-            return False
-        return True
+        error(f"Unknown fetch method: {method_name}")
+        return False
 
     result = subprocess.run(cmd)
     if result.returncode != 0:
@@ -251,24 +245,24 @@ def fetch_files(method_name, tool, url, tmpdir):
     return True
 
 
-def transfer_to_server(tmpdir, remote_path):
+def transfer_to_server(tmpdir, remote_path, host, port=None):
     items = os.listdir(tmpdir)
     if not items:
         error("No files were downloaded. Nothing to transfer.")
         return False
 
-    if not _check_disk_space(remote_path):
+    if not _check_disk_space(remote_path, host=host):
         warn("Aborted.")
         return False
 
-    info(f"Transferring {len(items)} item(s) to {get_host()}:{remote_path}/")
+    info(f"Transferring {len(items)} item(s) to {host}:{remote_path}/")
     start = time.time()
     for item in items:
         local_path = os.path.join(tmpdir, item)
         is_dir = os.path.isdir(local_path)
-        dest = f"{get_host()}:{remote_path}/"
+        dest = f"{host}:{remote_path}/"
         print(f"    {C.ACCENT}→{C.RESET} {item}")
-        result = rsync_transfer(local_path, dest, is_dir=is_dir)
+        result = rsync_transfer(local_path, dest, is_dir=is_dir, port=port)
         if result.returncode != 0:
             error(f"Failed to transfer {item}")
             notify("Homelab", f"Transfer failed: {item}")
@@ -282,7 +276,7 @@ def transfer_to_server(tmpdir, remote_path):
 
 # ─── 1. Fetch & Transfer (Transfer to Server) ──────────────────────────────
 
-def fetch_and_transfer():
+def fetch_and_transfer(host, base_path, extra_paths=None):
     method_name, tool = choose_fetch_method()
     if method_name is None:
         return
@@ -300,7 +294,7 @@ def fetch_and_transfer():
         if not fetch_files(method_name, tool, url, tmpdir):
             return
 
-        remote_path = browse_remote_folder()
+        remote_path = browse_remote_folder(host, base_path, extra_paths)
 
         items = os.listdir(tmpdir)
         if not items:
@@ -330,14 +324,15 @@ def fetch_and_transfer():
             print(f"    {C.ACCENT}•{C.RESET} {item}{sz_str}")
         print(
             f"  {C.BOLD}Destination:{C.RESET} "
-            f"{C.ACCENT}{get_host()}:{remote_path}/{C.RESET}"
+            f"{C.ACCENT}{host}:{remote_path}/{C.RESET}"
         )
 
         if not confirm("Proceed?"):
             warn("Aborted.")
             return
 
-        if transfer_to_server(tmpdir, remote_path):
+        if transfer_to_server(tmpdir, remote_path, host):
+            log_action("File Upload", f"{len(items)} item(s) via {method_name} → {host}:{remote_path}")
             log_transfer("fetch_transfer", method_name, url, remote_path, len(items))
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
@@ -345,47 +340,115 @@ def fetch_and_transfer():
 
 # ─── 2. Upload Local Files ─────────────────────────────────────────────────
 
-def upload_local():
+def upload_local(host, base_path, extra_paths=None, port=None):
     info("Select a file or folder to upload.")
 
     local_path = browse_local()
     if not local_path:
         return
 
-    remote_path = browse_remote_folder()
+    remote_path = browse_remote_folder(host, base_path, extra_paths)
 
     is_dir = os.path.isdir(local_path)
     name = os.path.basename(local_path)
-    new_name = prompt_text(f"Rename (blank to keep '{name}'):")
-    if new_name:
-        name = new_name
+    new_name = None
 
-    print(f"\n  {C.BOLD}Upload:{C.RESET} {name}")
-    print(
-        f"  {C.BOLD}To:{C.RESET}     "
-        f"{C.ACCENT}{get_host()}:{remote_path}/{C.RESET}"
-    )
+    # For directories, choose transfer mode (+ optional rename)
+    sync_contents = False
+    if is_dir:
+        mode_opts = [
+            f"Contents — merge files inside {name}/ into destination",
+            f"Folder   — transfer {name}/ itself as a subfolder",
+            "Rename   — transfer with a different folder name",
+            "Back",
+        ]
+        mode_idx = pick_option("Transfer mode:", mode_opts)
+        if mode_idx == 3:
+            return
+        if mode_idx == 2:
+            new_name = prompt_text(f"New name (blank to keep '{name}'):")
+            if not new_name:
+                new_name = None
+            # Renamed folder always syncs contents into new name
+            sync_contents = True
+        else:
+            sync_contents = (mode_idx == 0)
+
+    # Build source/dest paths
+    if is_dir and sync_contents:
+        source = local_path + "/"
+        dest = f"{host}:{remote_path}/{new_name}" if new_name else f"{host}:{remote_path}/"
+        if new_name:
+            mode_hint = f"Contents of {name}/ synced into {remote_path}/{new_name}/"
+        else:
+            mode_hint = f"Contents of {name}/ merged into destination"
+    elif is_dir:
+        source = local_path
+        dest = f"{host}:{remote_path}/"
+        mode_hint = f"Folder {name}/ transferred as subfolder"
+    else:
+        source = local_path
+        dest = f"{host}:{remote_path}/"
+        mode_hint = f"File copied to {remote_path}/{name}"
+
+    # Rsync options before summary so they appear in confirmation
+    extra_args = pick_rsync_options(source=source, dest=dest, port=port)
+
+    # Disk space check before summary
+    if not _check_disk_space(remote_path, host=host):
+        warn("Aborted.")
+        return
+
+    # Calculate total transfer size
+    print(f"  {C.DIM}Calculating total transfer size...{C.RESET}", end="\r", flush=True)
+    total_bytes = 0
+    file_count = 0
+    if is_dir:
+        for root, _dirs, fnames in os.walk(local_path):
+            for fn in fnames:
+                fp = os.path.join(root, fn)
+                if not os.path.islink(fp):
+                    try:
+                        total_bytes += os.path.getsize(fp)
+                        file_count += 1
+                    except OSError:
+                        pass
+    else:
+        try:
+            total_bytes = os.path.getsize(local_path)
+        except OSError:
+            pass
+        file_count = 1
+
+    if total_bytes >= 1_000_000_000:
+        size_str = f"{total_bytes / (1024 ** 3):.1f} GB"
+    elif total_bytes >= 1_000_000:
+        size_str = f"{total_bytes / (1024 ** 2):.1f} MB"
+    elif total_bytes >= 1_000:
+        size_str = f"{total_bytes / 1024:.1f} KB"
+    else:
+        size_str = f"{total_bytes} B"
+    if is_dir:
+        size_str += f" ({file_count:,} files)"
+
+    # Final confirmation summary
+    dest_display = dest.split(":", 1)[1] if ":" in dest else dest
+    display_name = new_name or name
+    clear_screen()
+    print(f"\n  {C.BOLD}Upload:{C.RESET} {display_name}")
+    print(f"  {C.BOLD}From:{C.RESET}   {C.ACCENT}{local_path}{C.RESET}")
+    print(f"  {C.BOLD}To:{C.RESET}     {C.ACCENT}{host}:{dest_display}{C.RESET}")
+    print(f"  {C.BOLD}Mode:{C.RESET}   {C.DIM}{mode_hint}{C.RESET}")
+    print(f"  {C.BOLD}Size:{C.RESET}   {size_str}")
+    if extra_args:
+        print(f"  {C.BOLD}Opts:{C.RESET}   {C.DIM}{' '.join(extra_args)}{C.RESET}")
 
     if not confirm("Proceed?"):
         warn("Aborted.")
         return
 
-    if not _check_disk_space(remote_path):
-        warn("Aborted.")
-        return
-
     start = time.time()
-    if new_name and is_dir:
-        # Trailing slash = sync contents into the renamed destination
-        source = local_path + "/"
-        dest = f"{get_host()}:{remote_path}/{new_name}"
-    elif new_name:
-        source = local_path
-        dest = f"{get_host()}:{remote_path}/{new_name}"
-    else:
-        source = local_path
-        dest = f"{get_host()}:{remote_path}/"
-    result = rsync_transfer(source, dest, is_dir=is_dir)
+    result = rsync_transfer(source, dest, is_dir=is_dir, port=port, extra_args=extra_args)
     elapsed = time.time() - start
     if result.returncode != 0:
         error("Upload failed.")
@@ -393,12 +456,13 @@ def upload_local():
     else:
         success(f"Uploaded: {name} ({elapsed:.1f}s)")
         notify("Homelab", f"Upload complete: {name}")
+        log_action("File Upload", f"{name} → {host}:{remote_path}")
         log_transfer("upload", "rsync", local_path, remote_path, 1)
 
 
 # ─── 3. Queue Download ─────────────────────────────────────────────────────
 
-def queue_download():
+def queue_download(host, base_path, extra_paths=None):
     method_name, tool = choose_fetch_method()
     if method_name is None:
         return
@@ -437,13 +501,14 @@ def queue_download():
 
         success(f"{len(items)} item(s) downloaded successfully.")
 
-        remote_path = browse_remote_folder()
+        remote_path = browse_remote_folder(host, base_path, extra_paths)
 
         if not confirm(f"Transfer {len(items)} item(s) to {remote_path}?"):
             warn("Aborted.")
             return
 
-        if transfer_to_server(tmpdir, remote_path):
+        if transfer_to_server(tmpdir, remote_path, host):
+            log_action("File Upload", f"{len(items)} item(s) via {method_name} (queued) → {host}:{remote_path}")
             log_transfer("queue_transfer", method_name, f"{len(urls)} URLs", remote_path, len(items))
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
@@ -451,20 +516,20 @@ def queue_download():
 
 # ─── 4. Manage Files ───────────────────────────────────────────────────────
 
-def manage_files():
-    current = get_base()
+def manage_files(host, base_path, extra_paths=None, trash_path=None, port=None):
+    current = base_path
 
     while True:
-        dirs, files = list_remote_items(current)
+        dirs, files = list_remote_items(current, host=host, port=port)
         all_items = dirs + files
 
         choices = []
-        if not _is_at_root(current):
+        if not _is_at_root(current, base_path, extra_paths):
             choices.append(".. (go up)")
 
         extra_labels = []
-        if current == get_base():
-            for ep in CFG.get("unraid_extra_paths", []):
+        if current == base_path:
+            for ep in (extra_paths or []):
                 label = f"[EXT]  {os.path.basename(ep)}/"
                 extra_labels.append((label, ep))
                 choices.append(label)
@@ -495,15 +560,16 @@ def manage_files():
             if not name:
                 continue
             new_path = os.path.join(current, name)
-            result = ssh_run(f"mkdir -p '{new_path}'")
+            result = ssh_run(f"mkdir -p '{new_path}'", host=host, port=port)
             if result.returncode != 0:
                 error(f"Failed: {result.stderr.strip()}")
             else:
+                log_action("Folder Create", f"{host}:{new_path}")
                 success(f"Created: {new_path}")
         elif choice == "Multi-select":
-            _multi_select_operations(current, all_items)
+            _multi_select_operations(current, all_items, host, base_path, extra_paths, trash_path, port=port)
         elif choice == "Batch rename":
-            _batch_rename(current)
+            _batch_rename(current, host, port=port)
         else:
             extra_match = None
             for label, ep in extra_labels:
@@ -514,7 +580,7 @@ def manage_files():
                 current = extra_match
                 continue
 
-            has_up = 0 if _is_at_root(current) else 1
+            has_up = 0 if _is_at_root(current, base_path, extra_paths) else 1
             item_idx = idx - has_up - len(extra_labels)
             if item_idx < 0 or item_idx >= len(all_items):
                 continue
@@ -541,28 +607,28 @@ def manage_files():
                 if al == "Open folder":
                     current = full_path
                 elif al.startswith("Download to"):
-                    _download_from_server(full_path, is_dir=True)
+                    _download_from_server(full_path, host, is_dir=True, port=port)
                 elif al == "Search in folder":
-                    _search_in_folder(full_path)
+                    _search_in_folder(full_path, host, base_path, port=port)
                 elif al == "Search by file type":
-                    _search_by_type(full_path)
+                    _search_by_type(full_path, host, base_path, port=port)
                 elif al == "Find duplicates":
-                    _find_duplicates_in(full_path)
+                    _find_duplicates_in(full_path, host, port=port)
                 elif al == "Calculate size":
-                    _folder_size(full_path)
+                    _folder_size(full_path, host, port=port)
                 elif al == "Compress (tar.gz)":
-                    _compress_on_server(full_path, is_dir=True)
+                    _compress_on_server(full_path, host, is_dir=True, port=port)
                 elif al == "Multi-select":
-                    sub_dirs, sub_files = list_remote_items(full_path)
-                    _multi_select_operations(full_path, sub_dirs + sub_files)
+                    sub_dirs, sub_files = list_remote_items(full_path, host=host, port=port)
+                    _multi_select_operations(full_path, sub_dirs + sub_files, host, base_path, extra_paths, trash_path, port=port)
                 elif al == "Rename":
-                    _rename_remote(current, name)
+                    _rename_remote(current, name, host, port=port)
                 elif al == "Move":
-                    _move_remote(full_path)
+                    _move_remote(full_path, host, base_path, extra_paths, port=port)
                 elif al == "Copy":
-                    _copy_remote(full_path, is_dir=True)
+                    _copy_remote(full_path, host, base_path, extra_paths, is_dir=True, port=port)
                 elif al == "Delete":
-                    _delete_remote(full_path, is_dir=True)
+                    _delete_remote(full_path, host, trash_path, is_dir=True, port=port)
             else:
                 hostname = local_hostname()
                 actions = [f"Download to {hostname}", "Preview"]
@@ -585,37 +651,37 @@ def manage_files():
                 action_label = actions[action]
 
                 if action_label.startswith("Download to"):
-                    _download_from_server(full_path, is_dir=False)
+                    _download_from_server(full_path, host, is_dir=False, port=port)
                 elif action_label == "Extract on server":
-                    _extract_on_server(full_path, current)
+                    _extract_on_server(full_path, current, host, port=port)
                 elif action_label == "Checksum/Verify":
-                    _checksum_file(full_path)
+                    _checksum_file(full_path, host, port=port)
                 elif action_label == "Compress (tar.gz)":
-                    _compress_on_server(full_path)
+                    _compress_on_server(full_path, host, port=port)
                 elif action_label == "Preview":
-                    _preview_file(full_path, name)
+                    _preview_file(full_path, name, host, port=port)
                 elif action_label == "Edit (nano)":
-                    _edit_remote(full_path)
+                    _edit_remote(full_path, host, port=port)
                 elif action_label == "Rename":
-                    _rename_remote(current, name)
+                    _rename_remote(current, name, host, port=port)
                 elif action_label == "Move":
-                    _move_remote(full_path)
+                    _move_remote(full_path, host, base_path, extra_paths, port=port)
                 elif action_label == "Copy":
-                    _copy_remote(full_path, is_dir=False)
+                    _copy_remote(full_path, host, base_path, extra_paths, is_dir=False, port=port)
                 elif action_label == "Delete":
-                    _delete_remote(full_path, is_dir=False)
+                    _delete_remote(full_path, host, trash_path, is_dir=False, port=port)
 
 
-def manage_files_at(start_path):
+def manage_files_at(start_path, host, base_path, port=None):
     """Like manage_files but starting at a specific path."""
     current = start_path
 
     while True:
-        dirs, files = list_remote_items(current)
+        dirs, files = list_remote_items(current, host=host, port=port)
         all_items = dirs + files
 
         choices = []
-        if current != get_base():
+        if current != base_path:
             choices.append(".. (go up)")
         for name, size, item_type in all_items:
             choices.append(format_item(name, size, item_type))
@@ -633,7 +699,7 @@ def manage_files_at(start_path):
         elif choice == ".. (go up)":
             current = os.path.dirname(current)
         else:
-            offset = 1 if current != get_base() else 0
+            offset = 1 if current != base_path else 0
             item_idx = idx - offset
             if item_idx < 0 or item_idx >= len(all_items):
                 continue
@@ -649,40 +715,42 @@ def manage_files_at(start_path):
                     [f"Download to {hostname}", "Preview", "Cancel"],
                 )
                 if action == 0:
-                    _download_from_server(full_path, is_dir=False)
+                    _download_from_server(full_path, host, is_dir=False, port=port)
                 elif action == 1:
-                    _preview_file(full_path, name)
+                    _preview_file(full_path, name, host, port=port)
 
 
 # ─── File operation helpers ─────────────────────────────────────────────────
 
-def _rename_remote(parent_path, old_name):
+def _rename_remote(parent_path, old_name, host, port=None):
     new_name = prompt_text(f"Rename '{old_name}' to:")
     if not new_name:
         warn("Cancelled.")
         return
     old = os.path.join(parent_path, old_name)
     new = os.path.join(parent_path, new_name)
-    result = ssh_run(f"mv '{old}' '{new}'")
+    result = ssh_run(f"mv '{old}' '{new}'", host=host, port=port)
     if result.returncode != 0:
         error(f"Failed: {result.stderr.strip()}")
     else:
+        log_action("File Rename", f"{host}:{old} → {new_name}")
         success(f"Renamed to: {new_name}")
 
 
-def _move_remote(source_path):
+def _move_remote(source_path, host, base_path, extra_paths=None, port=None):
     print(f"\n  {C.BOLD}Moving:{C.RESET} {source_path}")
     info("Select destination folder:")
-    dest = browse_remote_folder()
+    dest = browse_remote_folder(host, base_path, extra_paths, port=port)
     name = os.path.basename(source_path)
-    result = ssh_run(f"mv '{source_path}' '{dest}/{name}'")
+    result = ssh_run(f"mv '{source_path}' '{dest}/{name}'", host=host, port=port)
     if result.returncode != 0:
         error(f"Failed: {result.stderr.strip()}")
     else:
+        log_action("File Move", f"{host}:{source_path} → {dest}/{name}")
         success(f"Moved to: {dest}/{name}")
 
 
-def _batch_rename(current_dir):
+def _batch_rename(current_dir, host, port=None):
     """Regex-based batch rename of files in a directory."""
     pattern = prompt_text("Find pattern (regex):")
     if not pattern:
@@ -691,7 +759,7 @@ def _batch_rename(current_dir):
     if replacement is None:
         return
 
-    result = ssh_run(f"ls -1 '{current_dir}'")
+    result = ssh_run(f"ls -1 '{current_dir}'", host=host, port=port)
     if result.returncode != 0 or not result.stdout.strip():
         error("Could not list files.")
         return
@@ -723,19 +791,21 @@ def _batch_rename(current_dir):
     for old, new in renames:
         old_path = os.path.join(current_dir, old)
         new_path = os.path.join(current_dir, new)
-        r = ssh_run(f"mv '{old_path}' '{new_path}'")
+        r = ssh_run(f"mv '{old_path}' '{new_path}'", host=host, port=port)
         if r.returncode == 0:
             ok += 1
         else:
             error(f"Failed: {old} → {new}")
+    if ok > 0:
+        log_action("Batch Rename", f"{ok} file(s) in {host}:{current_dir}")
     success(f"Renamed {ok}/{len(renames)} files.")
 
 
-def _folder_size(remote_path):
+def _folder_size(remote_path, host, port=None):
     """Calculate and display the size of a remote folder."""
     name = os.path.basename(remote_path)
     info(f"Calculating size of {name}...")
-    result = ssh_run(f"du -sh '{remote_path}'")
+    result = ssh_run(f"du -sh '{remote_path}'", host=host, port=port)
     if result.returncode != 0:
         error(f"Failed: {result.stderr.strip()}")
     else:
@@ -744,7 +814,7 @@ def _folder_size(remote_path):
     input("\n  Press Enter to continue...")
 
 
-def _multi_select_operations(current_dir, all_items):
+def _multi_select_operations(current_dir, all_items, host, base_path, extra_paths=None, trash_path=None, port=None):
     """Multi-select files/folders for batch operations."""
     if not all_items:
         info("No items to select.")
@@ -774,25 +844,25 @@ def _multi_select_operations(current_dir, all_items):
         for name, size, item_type in items:
             full = os.path.join(current_dir, name)
             info(f"Downloading: {name}")
-            _download_from_server(full, is_dir=(item_type == "dir"))
+            _download_from_server(full, host, is_dir=(item_type == "dir"), port=port)
             ok += 1
     elif action_idx == 1:  # Delete to trash
-        trash_path = CFG.get("unraid_trash_path", "/mnt/user/.stash_trash")
-        ssh_run(f"mkdir -p '{trash_path}'")
+        tp = trash_path or "/tmp/.homelab_trash"
+        ssh_run(f"mkdir -p '{tp}'", host=host, port=port)
         for name, size, item_type in items:
             full = os.path.join(current_dir, name)
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             trash_name = f"{name}_{ts}"
-            r = ssh_run(f"mv '{full}' '{trash_path}/{trash_name}'")
+            r = ssh_run(f"mv '{full}' '{tp}/{trash_name}'", host=host, port=port)
             if r.returncode == 0:
-                ssh_run(f"echo '{full}' > '{trash_path}/{trash_name}.origin'")
+                ssh_run(f"echo '{full}' > '{tp}/{trash_name}.origin'", host=host, port=port)
                 ok += 1
     elif action_idx == 2:  # Move
         info("Select destination folder:")
-        dest = browse_remote_folder()
+        dest = browse_remote_folder(host, base_path, extra_paths, port=port)
         for name, size, item_type in items:
             full = os.path.join(current_dir, name)
-            r = ssh_run(f"mv '{full}' '{dest}/{name}'")
+            r = ssh_run(f"mv '{full}' '{dest}/{name}'", host=host, port=port)
             if r.returncode == 0:
                 ok += 1
     elif action_idx == 3:  # Compress all into one archive
@@ -800,7 +870,7 @@ def _multi_select_operations(current_dir, all_items):
         archive_name = f"batch_{ts}.tar.gz"
         names = " ".join(f"'{item[0]}'" for item in items)
         info(f"Compressing {len(items)} items...")
-        r = ssh_run(f"cd '{current_dir}' && tar -czf '{archive_name}' {names}")
+        r = ssh_run(f"cd '{current_dir}' && tar -czf '{archive_name}' {names}", host=host, port=port)
         if r.returncode == 0:
             success(f"Created: {archive_name}")
             return
@@ -810,34 +880,35 @@ def _multi_select_operations(current_dir, all_items):
     success(f"Completed: {ok}/{len(items)} successful")
 
 
-def _copy_remote(source_path, is_dir=False):
+def _copy_remote(source_path, host, base_path, extra_paths=None, is_dir=False, port=None):
     """Copy a file or folder to another location on the server."""
     name = os.path.basename(source_path)
     print(f"\n  {C.BOLD}Copying:{C.RESET} {name}")
     info("Select destination folder:")
-    dest = browse_remote_folder()
+    dest = browse_remote_folder(host, base_path, extra_paths, port=port)
     if is_dir:
-        result = ssh_run(f"cp -r '{source_path}' '{dest}/{name}'")
+        result = ssh_run(f"cp -r '{source_path}' '{dest}/{name}'", host=host, port=port)
     else:
-        result = ssh_run(f"cp '{source_path}' '{dest}/{name}'")
+        result = ssh_run(f"cp '{source_path}' '{dest}/{name}'", host=host, port=port)
     if result.returncode != 0:
         error(f"Failed: {result.stderr.strip()}")
     else:
+        log_action("File Copy", f"{host}:{source_path} → {dest}/{name}")
         success(f"Copied to: {dest}/{name}")
 
 
-def _edit_remote(remote_path):
+def _edit_remote(remote_path, host, port=None):
     """Open a remote file in nano over SSH with TTY."""
-    subprocess.run(["ssh", "-t", get_host(), f"nano '{remote_path}'"])
+    subprocess.run(["ssh", "-t"] + (["-p", str(port)] if port else []) + [host, f"nano '{remote_path}'"])
 
 
-def _delete_remote(path, is_dir=False):
+def _delete_remote(path, host, trash_path=None, is_dir=False, port=None):
     name = os.path.basename(path)
     if CFG.get("dry_run"):
         info(f"[DRY RUN] Would delete: {path}")
         return
 
-    trash_path = CFG.get("unraid_trash_path", "/mnt/user/.stash_trash")
+    tp = trash_path or "/tmp/.homelab_trash"
     action = pick_option(
         f"Delete '{name}'?",
         ["Move to trash", "Permanently delete", "Cancel"],
@@ -849,33 +920,36 @@ def _delete_remote(path, is_dir=False):
     elif action == 0:
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         trash_name = f"{name}_{ts}"
-        ssh_run(f"mkdir -p '{trash_path}'")
-        result = ssh_run(f"mv '{path}' '{trash_path}/{trash_name}'")
+        ssh_run(f"mkdir -p '{tp}'", host=host, port=port)
+        result = ssh_run(f"mv '{path}' '{tp}/{trash_name}'", host=host, port=port)
         if result.returncode != 0:
             error(f"Failed: {result.stderr.strip()}")
         else:
-            ssh_run(f"echo '{path}' > '{trash_path}/{trash_name}.origin'")
+            ssh_run(f"echo '{path}' > '{tp}/{trash_name}.origin'", host=host, port=port)
+            log_action("File Move to Trash", f"{host}:{path}")
             success(f"Moved to trash: {name}")
     else:
         if not confirm("Permanently delete? This cannot be undone.", default_yes=False):
             warn("Cancelled.")
             return
         if is_dir:
-            result = ssh_run(f"rm -rf '{path}'")
+            result = ssh_run(f"rm -rf '{path}'", host=host, port=port)
         else:
-            result = ssh_run(f"rm -f '{path}'")
+            result = ssh_run(f"rm -f '{path}'", host=host, port=port)
         if result.returncode != 0:
             error(f"Failed: {result.stderr.strip()}")
         else:
+            log_action("File Delete", f"{host}:{path}")
             success(f"Deleted: {name}")
 
 
-def manage_trash():
+def manage_trash(host, trash_path=None, port=None):
     """Browse and manage items in the trash folder."""
-    trash_path = CFG.get("unraid_trash_path", "/mnt/user/.stash_trash")
+    tp = trash_path or "/tmp/.homelab_trash"
     while True:
         result = ssh_run(
-            f"ls -1 '{trash_path}' 2>/dev/null | grep -v '\\.origin$'"
+            f"ls -1 '{tp}' 2>/dev/null | grep -v '\\.origin$'",
+            host=host, port=port,
         )
         if result.returncode != 0 or not result.stdout.strip():
             info("Trash is empty.")
@@ -892,13 +966,14 @@ def manage_trash():
             return
         elif choices[idx] == "Empty all trash":
             if confirm("Permanently delete ALL items in trash?", default_yes=False):
-                ssh_run(f"rm -rf '{trash_path}'/*")
+                ssh_run(f"rm -rf '{tp}'/*", host=host, port=port)
+                log_action("Trash Empty", f"{host}:{tp}")
                 success("Trash emptied.")
             return
         else:
             trash_item = items[idx]
-            full = f"{trash_path}/{trash_item}"
-            origin_result = ssh_run(f"cat '{full}.origin' 2>/dev/null")
+            full = f"{tp}/{trash_item}"
+            origin_result = ssh_run(f"cat '{full}.origin' 2>/dev/null", host=host, port=port)
             orig = origin_result.stdout.strip() if origin_result.returncode == 0 else ""
 
             action = pick_option(
@@ -911,17 +986,19 @@ def manage_trash():
             )
             if action == 0 and orig:
                 dest_dir = os.path.dirname(orig)
-                ssh_run(f"mkdir -p '{dest_dir}'")
-                r = ssh_run(f"mv '{full}' '{orig}'")
+                ssh_run(f"mkdir -p '{dest_dir}'", host=host, port=port)
+                r = ssh_run(f"mv '{full}' '{orig}'", host=host, port=port)
                 if r.returncode == 0:
-                    ssh_run(f"rm -f '{full}.origin'")
+                    ssh_run(f"rm -f '{full}.origin'", host=host, port=port)
+                    log_action("Trash Restore", f"{host}:{orig}")
                     success(f"Restored: {orig}")
                 else:
                     error(f"Failed: {r.stderr.strip()}")
             elif action == 1:
-                r = ssh_run(f"rm -rf '{full}'")
+                r = ssh_run(f"rm -rf '{full}'", host=host, port=port)
                 if r.returncode == 0:
-                    ssh_run(f"rm -f '{full}.origin'")
+                    ssh_run(f"rm -f '{full}.origin'", host=host, port=port)
+                    log_action("File Delete", f"{host}:{full} (from trash)")
                     success(f"Permanently deleted: {trash_item}")
                 else:
                     error(f"Failed: {r.stderr.strip()}")
@@ -929,13 +1006,13 @@ def manage_trash():
 
 # ─── Preview / Extract / Compress / Checksum ────────────────────────────────
 
-def _preview_file(remote_path, name):
+def _preview_file(remote_path, name, host, port=None):
     """Preview a remote file based on its type."""
     lower = name.lower()
 
     if any(lower.endswith(ext) for ext in TEXT_EXT):
         print(f"\n  {C.BOLD}Preview: {name} (first 40 lines){C.RESET}\n")
-        result = ssh_run(f"head -40 '{remote_path}'")
+        result = ssh_run(f"head -40 '{remote_path}'", host=host, port=port)
         if result.returncode == 0:
             for line in result.stdout.split("\n"):
                 print(f"  {C.DIM}│{C.RESET} {line}")
@@ -947,11 +1024,11 @@ def _preview_file(remote_path, name):
     img_ext = (".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".webp")
     if any(lower.endswith(ext) for ext in img_ext):
         print(f"\n  {C.BOLD}Image info: {name}{C.RESET}\n")
-        result = ssh_run(f"file '{remote_path}' && stat -c 'Size: %s bytes' '{remote_path}' 2>/dev/null || stat -f 'Size: %z bytes' '{remote_path}'")
+        result = ssh_run(f"file '{remote_path}' && stat -c 'Size: %s bytes' '{remote_path}' 2>/dev/null || stat -f 'Size: %z bytes' '{remote_path}'", host=host, port=port)
         if result.returncode == 0:
             for line in result.stdout.strip().split("\n"):
                 print(f"  {line}")
-        result2 = ssh_run(f"identify '{remote_path}' 2>/dev/null")
+        result2 = ssh_run(f"identify '{remote_path}' 2>/dev/null", host=host, port=port)
         if result2.returncode == 0 and result2.stdout.strip():
             print(f"  {result2.stdout.strip()}")
         input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
@@ -961,31 +1038,31 @@ def _preview_file(remote_path, name):
                  ".mp3", ".flac", ".aac", ".ogg", ".wav", ".m4a", ".m4v")
     if any(lower.endswith(ext) for ext in media_ext):
         print(f"\n  {C.BOLD}Media info: {name}{C.RESET}\n")
-        result = ssh_run(f"mediainfo '{remote_path}' 2>/dev/null | head -30")
+        result = ssh_run(f"mediainfo '{remote_path}' 2>/dev/null | head -30", host=host, port=port)
         if result.returncode == 0 and result.stdout.strip():
             for line in result.stdout.strip().split("\n"):
                 print(f"  {line}")
         else:
-            result = ssh_run(f"ffprobe -hide_banner '{remote_path}' 2>&1 | head -20")
+            result = ssh_run(f"ffprobe -hide_banner '{remote_path}' 2>&1 | head -20", host=host, port=port)
             if result.returncode == 0 and result.stdout.strip():
                 for line in result.stdout.strip().split("\n"):
                     print(f"  {line}")
             else:
-                result = ssh_run(f"file '{remote_path}'")
+                result = ssh_run(f"file '{remote_path}'", host=host, port=port)
                 if result.returncode == 0:
                     print(f"  {result.stdout.strip()}")
         input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
         return
 
     print(f"\n  {C.BOLD}File info: {name}{C.RESET}\n")
-    result = ssh_run(f"file '{remote_path}' && ls -lh '{remote_path}'")
+    result = ssh_run(f"file '{remote_path}' && ls -lh '{remote_path}'", host=host, port=port)
     if result.returncode == 0:
         for line in result.stdout.strip().split("\n"):
             print(f"  {line}")
     input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
 
 
-def _extract_on_server(archive_path, current_dir):
+def _extract_on_server(archive_path, current_dir, host, port=None):
     """Extract an archive on the remote server."""
     name = os.path.basename(archive_path)
     lower = name.lower()
@@ -1014,14 +1091,15 @@ def _extract_on_server(archive_path, current_dir):
         error("Unsupported archive format.")
         return
 
-    result = ssh_run(cmd)
+    result = ssh_run(cmd, host=host, port=port)
     if result.returncode != 0:
         error(f"Extraction failed: {result.stderr.strip()}")
     else:
+        log_action("File Extract", f"{host}:{archive_path} → {extract_to}")
         success(f"Extracted to: {extract_to}")
 
 
-def _compress_on_server(path, is_dir=False):
+def _compress_on_server(path, host, is_dir=False, port=None):
     """Compress a file or folder on the server as tar.gz."""
     name = os.path.basename(path)
     parent = os.path.dirname(path)
@@ -1034,11 +1112,11 @@ def _compress_on_server(path, is_dir=False):
         info(f"[DRY RUN] Would compress {name} → {archive_name}")
         return
     info(f"Compressing {name}...")
-    result = ssh_run(f"tar -czf '{archive_path}' -C '{parent}' '{name}'")
+    result = ssh_run(f"tar -czf '{archive_path}' -C '{parent}' '{name}'", host=host, port=port)
     if result.returncode != 0:
         error(f"Compression failed: {result.stderr.strip()}")
     else:
-        size_r = ssh_run(f"stat -c '%s' '{archive_path}' 2>/dev/null")
+        size_r = ssh_run(f"stat -c '%s' '{archive_path}' 2>/dev/null", host=host, port=port)
         if size_r.returncode == 0:
             sz = int(size_r.stdout.strip())
             if sz > 1_000_000_000:
@@ -1052,7 +1130,7 @@ def _compress_on_server(path, is_dir=False):
             success(f"Created: {archive_name}")
 
 
-def _checksum_file(remote_path):
+def _checksum_file(remote_path, host, port=None):
     """Calculate or verify file checksums."""
     name = os.path.basename(remote_path)
     idx = pick_option(f"Checksum for {name}:", [
@@ -1064,7 +1142,7 @@ def _checksum_file(remote_path):
     hashes = {}
     if idx in (0, 2):
         info("Computing MD5...")
-        r = ssh_run(f"md5sum '{remote_path}'")
+        r = ssh_run(f"md5sum '{remote_path}'", host=host, port=port)
         if r.returncode == 0:
             h = r.stdout.strip().split()[0]
             hashes["MD5"] = h
@@ -1073,7 +1151,7 @@ def _checksum_file(remote_path):
             error("MD5 failed.")
     if idx in (1, 2):
         info("Computing SHA256...")
-        r = ssh_run(f"sha256sum '{remote_path}'")
+        r = ssh_run(f"sha256sum '{remote_path}'", host=host, port=port)
         if r.returncode == 0:
             h = r.stdout.strip().split()[0]
             hashes["SHA256"] = h
@@ -1093,7 +1171,7 @@ def _checksum_file(remote_path):
             input("\n  Press Enter to continue...")
             return
         info(f"Computing {label}...")
-        r = ssh_run(f"{cmd} '{remote_path}'")
+        r = ssh_run(f"{cmd} '{remote_path}'", host=host, port=port)
         if r.returncode == 0:
             actual = r.stdout.strip().split()[0].lower()
             if actual == expected:
@@ -1116,19 +1194,19 @@ def _checksum_file(remote_path):
     input("  Press Enter to continue...")
 
 
-def _compress_and_download(remote_path):
+def _compress_and_download(remote_path, host, port=None):
     """Compress a folder on the server, download the archive, then clean up."""
     name = os.path.basename(remote_path)
     archive_name = f"{name}.tar.gz"
     archive_path = f"/tmp/{archive_name}"
 
     info(f"Compressing {name} on server...")
-    result = ssh_run(f"tar -czf '{archive_path}' -C '{os.path.dirname(remote_path)}' '{name}'")
+    result = ssh_run(f"tar -czf '{archive_path}' -C '{os.path.dirname(remote_path)}' '{name}'", host=host, port=port)
     if result.returncode != 0:
         error(f"Compression failed: {result.stderr.strip()}")
         return
 
-    size_result = ssh_run(f"ls -lh '{archive_path}' | awk '{{print $5}}'")
+    size_result = ssh_run(f"ls -lh '{archive_path}' | awk '{{print $5}}'", host=host, port=port)
     if size_result.returncode == 0:
         info(f"Compressed size: {size_result.stdout.strip()}")
 
@@ -1138,36 +1216,37 @@ def _compress_and_download(remote_path):
 
     if not os.path.isdir(dest):
         error(f"Directory does not exist: {dest}")
-        ssh_run(f"rm -f '{archive_path}'")
+        ssh_run(f"rm -f '{archive_path}'", host=host, port=port)
         return
 
     start = time.time()
-    source = f"{get_host()}:{archive_path}"
-    result = rsync_transfer(source, f"{dest}/", is_dir=False)
+    source = f"{host}:{archive_path}"
+    result = rsync_transfer(source, f"{dest}/", is_dir=False, port=port)
     elapsed = time.time() - start
 
-    ssh_run(f"rm -f '{archive_path}'")
+    ssh_run(f"rm -f '{archive_path}'", host=host, port=port)
 
     if result.returncode != 0:
         error("Download failed.")
     else:
         success(f"Downloaded: {dest}/{archive_name} ({elapsed:.1f}s)")
         notify("Homelab", f"Download complete: {archive_name}")
+        log_action("File Download", f"{host}:{remote_path} → {dest} (compressed)")
         log_transfer("download", "compress+rsync", remote_path, dest, 1)
 
 
 # ─── 5. Download from Server ───────────────────────────────────────────────
 
-def download_from_server():
-    current = get_base()
-    info(f"Browse {get_host()} to download files/folders")
+def download_from_server(host, base_path, port=None):
+    current = base_path
+    info(f"Browse {host} to download files/folders")
 
     while True:
-        dirs, files = list_remote_items(current)
+        dirs, files = list_remote_items(current, host=host, port=port)
         all_items = dirs + files
 
         choices = []
-        if current != get_base():
+        if current != base_path:
             choices.append(".. (go up)")
         for name, size, item_type in all_items:
             choices.append(format_item(name, size, item_type))
@@ -1182,7 +1261,7 @@ def download_from_server():
         elif choice == ".. (go up)":
             current = os.path.dirname(current)
         else:
-            offset = 1 if current != get_base() else 0
+            offset = 1 if current != base_path else 0
             item_idx = idx - offset
             if item_idx < 0 or item_idx >= len(all_items):
                 continue
@@ -1197,21 +1276,21 @@ def download_from_server():
                 if action == 0:
                     current = full_path
                 elif action == 1:
-                    _download_from_server(full_path, is_dir=True)
+                    _download_from_server(full_path, host, is_dir=True, port=port)
                 elif action == 2:
-                    _compress_and_download(full_path)
+                    _compress_and_download(full_path, host, port=port)
             else:
                 action = pick_option(
                     f"Selected file: {name} ({size})",
                     ["Download", "Preview", "Cancel"],
                 )
                 if action == 0:
-                    _download_from_server(full_path, is_dir=False)
+                    _download_from_server(full_path, host, is_dir=False, port=port)
                 elif action == 1:
-                    _preview_file(full_path, name)
+                    _preview_file(full_path, name, host, port=port)
 
 
-def _download_from_server(remote_path, is_dir=False):
+def _download_from_server(remote_path, host, is_dir=False, port=None):
     default_dest = os.path.expanduser(CFG["default_download_dir"])
     dest = prompt_text(f"Local destination [{default_dest}]:") or default_dest
     dest = os.path.expanduser(dest)
@@ -1222,12 +1301,14 @@ def _download_from_server(remote_path, is_dir=False):
 
     name = os.path.basename(remote_path)
     print(f"\n  {C.BOLD}Downloading:{C.RESET} {name}")
-    print(f"  {C.BOLD}From:{C.RESET} {C.ACCENT}{get_host()}:{remote_path}{C.RESET}")
+    print(f"  {C.BOLD}From:{C.RESET} {C.ACCENT}{host}:{remote_path}{C.RESET}")
     print(f"  {C.BOLD}To:{C.RESET}   {C.ACCENT}{dest}/{C.RESET}")
 
+    dl_source = f"{host}:{remote_path}"
+    extra_args = pick_rsync_options(source=dl_source, dest=f"{dest}/", port=port)
+
     start = time.time()
-    source = f"{get_host()}:{remote_path}"
-    result = rsync_transfer(source, f"{dest}/", is_dir=is_dir)
+    result = rsync_transfer(dl_source, f"{dest}/", is_dir=is_dir, port=port, extra_args=extra_args)
     elapsed = time.time() - start
     if result.returncode != 0:
         error("Download failed.")
@@ -1235,12 +1316,13 @@ def _download_from_server(remote_path, is_dir=False):
     else:
         success(f"Downloaded: {dest}/{name} ({elapsed:.1f}s)")
         notify("Homelab", f"Download complete: {name}")
+        log_action("File Download", f"{host}:{remote_path} → {dest}")
         log_transfer("download", "rsync", remote_path, dest, 1)
 
 
 # ─── Search (integrated into file manager) ─────────────────────────────────
 
-def _search_in_folder(folder_path):
+def _search_in_folder(folder_path, host, base_path, port=None):
     """Search by filename or content within a folder."""
     mode = pick_option(
         "Search mode:",
@@ -1257,9 +1339,9 @@ def _search_in_folder(folder_path):
     info(f"Searching in {folder_path}...")
 
     if mode == 0:
-        result = ssh_run(f"find '{folder_path}' -iname '*{pattern}*' 2>/dev/null | head -50")
+        result = ssh_run(f"find '{folder_path}' -iname '*{pattern}*' 2>/dev/null | head -50", host=host, port=port)
     else:
-        result = ssh_run(f"grep -r -l -i '{pattern}' '{folder_path}' 2>/dev/null | head -50")
+        result = ssh_run(f"grep -r -l -i '{pattern}' '{folder_path}' 2>/dev/null | head -50", host=host, port=port)
 
     if result.returncode != 0 or not result.stdout.strip():
         warn("No results found.")
@@ -1270,7 +1352,7 @@ def _search_in_folder(folder_path):
 
     choices = []
     for m in matches:
-        rel = m.replace(get_base(), "~", 1)
+        rel = m.replace(base_path, "~", 1)
         choices.append(rel)
     choices.append("← Back")
 
@@ -1279,7 +1361,7 @@ def _search_in_folder(folder_path):
         return
 
     selected = matches[idx]
-    is_dir_check = ssh_run(f"test -d '{selected}' && echo dir || echo file")
+    is_dir_check = ssh_run(f"test -d '{selected}' && echo dir || echo file", host=host, port=port)
     is_dir = is_dir_check.stdout.strip() == "dir"
 
     hostname = local_hostname()
@@ -1288,10 +1370,10 @@ def _search_in_folder(folder_path):
         [f"Download to {hostname}", "Cancel"],
     )
     if action == 0:
-        _download_from_server(selected, is_dir=is_dir)
+        _download_from_server(selected, host, is_dir=is_dir, port=port)
 
 
-def _search_by_type(folder_path):
+def _search_by_type(folder_path, host, base_path, port=None):
     """Search for files by extension within a folder."""
     ext = prompt_text("File extension (e.g. .mkv, .jpg):")
     if not ext:
@@ -1300,7 +1382,7 @@ def _search_by_type(folder_path):
         ext = "." + ext
 
     info(f"Searching for *{ext} in {folder_path}...")
-    result = ssh_run(f"find '{folder_path}' -iname '*{ext}' 2>/dev/null | head -50")
+    result = ssh_run(f"find '{folder_path}' -iname '*{ext}' 2>/dev/null | head -50", host=host, port=port)
 
     if result.returncode != 0 or not result.stdout.strip():
         warn("No results found.")
@@ -1311,7 +1393,7 @@ def _search_by_type(folder_path):
 
     choices = []
     for m in matches:
-        rel = m.replace(get_base(), "~", 1)
+        rel = m.replace(base_path, "~", 1)
         choices.append(rel)
     choices.append("← Back")
 
@@ -1326,18 +1408,19 @@ def _search_by_type(folder_path):
         [f"Download to {hostname}", "Preview", "Cancel"],
     )
     if action == 0:
-        _download_from_server(selected, is_dir=False)
+        _download_from_server(selected, host, is_dir=False, port=port)
     elif action == 1:
-        _preview_file(selected, os.path.basename(selected))
+        _preview_file(selected, os.path.basename(selected), host, port=port)
 
 
 # ─── Find Duplicates (scoped to folder) ────────────────────────────────────
 
-def _find_duplicates_in(scan_path):
+def _find_duplicates_in(scan_path, host, port=None):
     """Scan a path for duplicate files by size + partial hash."""
     info("Scanning for files with identical sizes...")
     result = ssh_run(
-        f"find '{scan_path}' -type f -printf '%s %p\\n' 2>/dev/null | sort -n"
+        f"find '{scan_path}' -type f -printf '%s %p\\n' 2>/dev/null | sort -n",
+        host=host, port=port,
     )
     if result.returncode != 0 or not result.stdout.strip():
         info("No files found or scan failed.")
@@ -1367,7 +1450,7 @@ def _find_duplicates_in(scan_path):
     for size, paths in candidates.items():
         hash_map = {}
         for p in paths:
-            hr = ssh_run(f"head -c 4096 '{p}' | md5sum")
+            hr = ssh_run(f"head -c 4096 '{p}' | md5sum", host=host, port=port)
             if hr.returncode == 0:
                 h = hr.stdout.strip().split()[0]
                 hash_map.setdefault(h, []).append(p)
@@ -1396,7 +1479,7 @@ def _find_duplicates_in(scan_path):
         )
         if action == 0:
             for p in group[1:]:
-                r = ssh_run(f"rm -f '{p}'")
+                r = ssh_run(f"rm -f '{p}'", host=host, port=port)
                 if r.returncode == 0:
                     success(f"Deleted: {os.path.basename(p)}")
                 else:
@@ -1447,7 +1530,7 @@ def manage_bookmarks():
 
 # ─── History viewer ─────────────────────────────────────────────────────────
 
-def show_history():
+def show_history(host=None, port=None):
     from homelab.history import load_history, save_history
     history = load_history()
     if not history:
@@ -1507,7 +1590,7 @@ def show_history():
     if not confirm("Re-run this transfer?"):
         return
 
-    if direction == "fetch_transfer" and url:
+    if direction == "fetch_transfer" and url and host:
         tmpdir = tempfile.mkdtemp(prefix="homelab_")
         try:
             tool = None
@@ -1515,20 +1598,20 @@ def show_history():
                 if name == method:
                     tool = t
                     break
-            if tool is None and method != "Custom command":
+            if tool is None:
                 tool = method.lower()
 
             if fetch_files(method, tool, url, tmpdir):
-                if transfer_to_server(tmpdir, dest):
+                if transfer_to_server(tmpdir, dest, host, port=port):
                     items = os.listdir(tmpdir)
                     log_transfer("fetch_transfer", method, url, dest, len(items))
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
-    elif direction == "upload" and url:
+    elif direction == "upload" and url and host:
         if os.path.exists(url):
             is_dir = os.path.isdir(url)
-            rsync_dest = f"{get_host()}:{dest}/"
-            result = rsync_transfer(url, rsync_dest, is_dir=is_dir)
+            rsync_dest = f"{host}:{dest}/"
+            result = rsync_transfer(url, rsync_dest, is_dir=is_dir, port=port)
             if result.returncode == 0:
                 success("Re-upload complete!")
                 log_transfer("upload", "rsync", url, dest, 1)
@@ -1542,11 +1625,12 @@ def show_history():
 
 # ─── Mount Browser ──────────────────────────────────────────────────────────
 
-def mount_browser():
+def mount_browser(host, base_path="/mnt/user/", port=None):
     """Tree view of shares with sizes."""
     info("Scanning share sizes (this may take a moment)...")
     result = ssh_run(
-        "du -h --max-depth=2 /mnt/user/ 2>/dev/null | sort -rh | head -50"
+        f"du -h --max-depth=2 '{base_path}' 2>/dev/null | sort -rh | head -50",
+        host=host, port=port,
     )
     if result.returncode != 0 or not result.stdout.strip():
         error("Could not scan mounts.")
@@ -1566,10 +1650,10 @@ def mount_browser():
 
     choices = []
     for size, path in entries:
-        rel = path.replace("/mnt/user/", "").rstrip("/")
+        rel = path.replace(base_path, "").rstrip("/")
         depth = rel.count("/") if rel else 0
         indent = "  " * depth
-        display = rel.split("/")[-1] if rel else "/mnt/user"
+        display = rel.split("/")[-1] if rel else base_path.rstrip("/")
         choices.append(f"{size:>8}  {indent}{display}/")
     choices.append("← Back")
 
@@ -1581,4 +1665,4 @@ def mount_browser():
             ["Open in file manager", "Cancel"],
         )
         if action == 0:
-            manage_files_at(selected_path)
+            manage_files_at(selected_path, host, base_path, port=port)

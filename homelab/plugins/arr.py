@@ -8,6 +8,7 @@ import json
 import time
 import urllib.request
 
+from homelab.auditlog import log_action
 from homelab.config import CFG
 from homelab.plugins import Plugin, add_plugin_favorite
 from homelab.ui import C, pick_option, scrollable_list, confirm, prompt_text, success, error, warn
@@ -162,11 +163,11 @@ class ArrPlugin(Plugin):
     def _main_menu(self):
         while True:
             idx = pick_option(f"{self._display}:", [
-                f"Library              — browse {self._media_label}",
-                f"Search & Add         — find new {self._media_label} to monitor",
-                "Queue                — active downloads",
-                "Calendar             — upcoming releases",
                 "Activity             — recent history",
+                "Calendar             — upcoming releases",
+                f"Library              — browse {self._media_label}",
+                "Queue                — active downloads",
+                f"Search & Add         — find new {self._media_label} to monitor",
                 "System Status        — version, health, disk",
                 "───────────────",
                 "★ Add to Favorites   — pin an action to the main menu",
@@ -179,15 +180,15 @@ class ArrPlugin(Plugin):
             elif idx == 7:
                 add_plugin_favorite(self)
             elif idx == 0:
-                self._list_media()
-            elif idx == 1:
-                self._search_and_add()
-            elif idx == 2:
-                self._view_queue()
-            elif idx == 3:
-                self._view_calendar()
-            elif idx == 4:
                 self._view_activity()
+            elif idx == 1:
+                self._view_calendar()
+            elif idx == 2:
+                self._list_media()
+            elif idx == 3:
+                self._view_queue()
+            elif idx == 4:
+                self._search_and_add()
             elif idx == 5:
                 self._system_status()
 
@@ -233,6 +234,8 @@ class ArrPlugin(Plugin):
         if aidx == 0 and item_id:
             item["monitored"] = not monitored
             self._api(f"{self._media_endpoint}/{item_id}", method="PUT", data=item)
+            action = "Unmonitor" if monitored else "Monitor"
+            log_action(f"{self._display} {action}", title)
             success(f"{'Unmonitored' if monitored else 'Monitored'}: {title}")
 
     def _print_media_details(self, item):
@@ -307,6 +310,7 @@ class ArrPlugin(Plugin):
         if aidx == 0 and record_id:
             if confirm(f"Remove '{title}' from queue?", default_yes=False):
                 self._api(f"/queue/{record_id}?removeFromClient=false&blocklist=false", method="DELETE")
+                log_action(f"{self._display} Queue Remove", title)
                 success(f"Removed: {title}")
 
     # ── Calendar ──────────────────────────────────────────────────────────
@@ -521,6 +525,7 @@ class ArrPlugin(Plugin):
 
         result = self._api(self._media_endpoint, method="POST", data=payload)
         if result and result.get("id"):
+            log_action(f"{self._display} Add", title)
             success(f"Added: {title}")
         else:
             error(f"Failed to add {title}.")

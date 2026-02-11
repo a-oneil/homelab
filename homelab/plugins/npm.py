@@ -1,12 +1,15 @@
 """Nginx Proxy Manager plugin — list/add/edit proxy hosts via API."""
 
 import json
+import re
+import subprocess
 import time
 import urllib.request
 
 from homelab.config import CFG
+from homelab.auditlog import log_action
 from homelab.plugins import Plugin
-from homelab.ui import C, pick_option, confirm, prompt_text, success, error, warn
+from homelab.ui import C, pick_option, pick_multi, confirm, prompt_text, success, error, warn, info
 
 _HEADER_CACHE = {"timestamp": 0, "stats": ""}
 _CACHE_TTL = 300
@@ -125,29 +128,32 @@ def _fetch_stats():
 def npm_menu():
     while True:
         idx = pick_option("Nginx Proxy Manager:", [
+            "Add Proxy Host       — create new proxy host",
+            "Auto-Generate Proxy  — scan Docker containers for services",
             "Proxy Hosts          — list and manage proxy hosts",
             "Redirection Hosts    — list redirect rules",
             "SSL Certificates     — view certificates",
-            "Add Proxy Host       — create new proxy host",
             "───────────────",
             "★ Add to Favorites   — pin an action to the main menu",
             "← Back",
         ])
-        if idx == 6:
+        if idx == 7:
             return
-        elif idx == 4:
-            continue
         elif idx == 5:
+            continue
+        elif idx == 6:
             from homelab.plugins import add_plugin_favorite
             add_plugin_favorite(NpmPlugin())
         elif idx == 0:
-            _list_proxy_hosts()
-        elif idx == 1:
-            _list_redirects()
-        elif idx == 2:
-            _list_certs()
-        elif idx == 3:
             _add_proxy_host()
+        elif idx == 1:
+            _auto_generate_proxy_hosts()
+        elif idx == 2:
+            _list_proxy_hosts()
+        elif idx == 3:
+            _list_redirects()
+        elif idx == 4:
+            _list_certs()
 
 
 def _list_proxy_hosts():
@@ -226,6 +232,8 @@ def _host_detail(host_id):
     elif al == toggle_label:
         _api(f"/nginx/proxy-hosts/{host_id}", method="PUT",
              data=_host_payload(host, enabled=not enabled))
+        action = "NPM Disable Proxy Host" if enabled else "NPM Enable Proxy Host"
+        log_action(action, domains)
         success(f"{'Disabled' if enabled else 'Enabled'}: {domains}")
     elif al == ssl_label:
         cert_id, ssl_forced, http2 = _pick_certificate()
@@ -234,12 +242,15 @@ def _host_detail(host_id):
                                 ssl_forced=ssl_forced, http2_support=http2,
                                 hsts_enabled=ssl_forced))
         if cert_id:
+            log_action("NPM Assign SSL", f"cert #{cert_id} → {domains}")
             success(f"SSL certificate #{cert_id} assigned to {domains}")
         else:
+            log_action("NPM Remove SSL", domains)
             success(f"SSL removed from {domains}")
     elif al == "Delete":
         if confirm(f"Delete proxy host {domains}?", default_yes=False):
             _api(f"/nginx/proxy-hosts/{host_id}", method="DELETE")
+            log_action("NPM Delete Proxy Host", domains)
             success(f"Deleted: {domains}")
 
 
@@ -316,6 +327,7 @@ def _cert_detail(cert):
     elif action == "Renew":
         result = _api(f"/nginx/certificates/{cert_id}/renew", method="POST")
         if result is not None:
+            log_action("NPM Renew Certificate", domains)
             success(f"Renewal triggered for {domains}")
         else:
             error(f"Renewal failed for {domains}")
@@ -323,6 +335,7 @@ def _cert_detail(cert):
     elif action == "Delete":
         if confirm(f"Delete certificate for {domains}?", default_yes=False):
             _api(f"/nginx/certificates/{cert_id}", method="DELETE")
+            log_action("NPM Delete Certificate", domains)
             success(f"Deleted certificate: {domains}")
 
 
@@ -399,5 +412,188 @@ def _add_proxy_host():
     if result:
         ssl_note = f" with SSL cert #{cert_id}" if cert_id else ""
         success(f"Created proxy host: {domain} → {fwd_host}:{fwd_port}{ssl_note}")
+        log_action("NPM Add Proxy Host", f"{domain} → {fwd_host}:{fwd_port}{ssl_note}")
     else:
         error("Failed to create proxy host.")
+
+
+# ─── Auto-Generate Proxy Hosts ────────────────────────────────────────────
+
+def _gather_ssh_hosts():
+    """Collect all available SSH hosts for Docker container scanning."""
+    hosts = []
+    unraid = CFG.get("unraid_ssh_host", "")
+    if unraid:
+        hosts.append({"name": "Unraid", "host": unraid})
+    for s in CFG.get("docker_servers", []):
+        hosts.append({
+            "name": s.get("name", "?"), "host": s.get("host", ""),
+            "port": s.get("port", ""),
+        })
+    return hosts
+
+
+def _parse_docker_ports(ports_str):
+    """Parse Docker port string like '0.0.0.0:8080->80/tcp, :::8080->80/tcp'.
+
+    Returns list of (host_port, container_port) tuples for IPv4 bindings.
+    """
+    results = []
+    if not ports_str or ports_str.strip() == "":
+        return results
+    for mapping in ports_str.split(","):
+        mapping = mapping.strip()
+        # Match patterns like 0.0.0.0:8080->80/tcp or 8080->80/tcp
+        m = re.match(r'(?:[\d.]+:)?(\d+)->(\d+)/\w+', mapping)
+        if m:
+            host_port = int(m.group(1))
+            container_port = int(m.group(2))
+            results.append((host_port, container_port))
+    return results
+
+
+def _extract_server_ip(host_str):
+    """Extract IP or hostname from SSH host string like 'root@10.0.0.5'."""
+    if "@" in host_str:
+        return host_str.split("@", 1)[1]
+    return host_str
+
+
+def _auto_generate_proxy_hosts():
+    """Scan Docker containers on a server and auto-create proxy hosts."""
+    hosts = _gather_ssh_hosts()
+    if not hosts:
+        warn("No SSH hosts configured. Add an Unraid host or Docker server first.")
+        input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
+        return
+
+    # Pick server to scan
+    choices = [f"{h['name']:<20} {C.DIM}{h['host']}{C.RESET}" for h in hosts]
+    choices.append("← Back")
+    idx = pick_option("Scan which server?", choices)
+    if idx >= len(hosts):
+        return
+
+    selected = hosts[idx]
+    ssh_host = selected["host"]
+    port = selected.get("port", "")
+
+    # SSH to get container names + ports
+    info(f"Scanning containers on {selected['name']}...")
+    ssh_cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
+    if port:
+        ssh_cmd.extend(["-p", port])
+    ssh_cmd.extend([
+        ssh_host,
+        "docker ps --format '{{.Names}}\\t{{.Ports}}' 2>/dev/null"
+    ])
+    try:
+        result = subprocess.run(ssh_cmd, capture_output=True, text=True,
+                                timeout=15, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        error("SSH connection timed out.")
+        input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
+        return
+
+    if result.returncode != 0 or not result.stdout.strip():
+        error("Failed to list containers (is Docker installed?).")
+        input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
+        return
+
+    # Parse containers with exposed ports
+    server_ip = _extract_server_ip(ssh_host)
+    candidates = []
+    for line in result.stdout.strip().split("\n"):
+        if not line.strip():
+            continue
+        parts = line.split("\t", 1)
+        cname = parts[0].strip()
+        ports_str = parts[1].strip() if len(parts) > 1 else ""
+        port_mappings = _parse_docker_ports(ports_str)
+        if port_mappings:
+            # Use the first port mapping
+            host_port, container_port = port_mappings[0]
+            candidates.append({
+                "name": cname,
+                "host_ip": server_ip,
+                "host_port": host_port,
+                "all_ports": port_mappings,
+            })
+
+    if not candidates:
+        warn("No containers with exposed ports found.")
+        input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
+        return
+
+    # Get existing proxy hosts for deduplication
+    existing = _api("/nginx/proxy-hosts")
+    existing_forwards = set()
+    existing_domains = {}
+    if existing and isinstance(existing, list):
+        for h in existing:
+            fwd_host = h.get("forward_host", "")
+            fwd_port = h.get("forward_port", 0)
+            existing_forwards.add(f"{fwd_host}:{fwd_port}")
+            domains = ", ".join(h.get("domain_names", []))
+            existing_domains[f"{fwd_host}:{fwd_port}"] = domains
+
+    # Build selection list
+    display = []
+    for c in candidates:
+        key = f"{c['host_ip']}:{c['host_port']}"
+        if key in existing_forwards:
+            domain = existing_domains.get(key, "?")
+            display.append(f"{c['name']:<20} :{c['host_port']}  {C.DIM}(already proxied: {domain}){C.RESET}")
+        else:
+            display.append(f"{c['name']:<20} :{c['host_port']}  {C.GREEN}(new){C.RESET}")
+
+    selected_indices = pick_multi("Select services to create proxy hosts for:", display)
+    if not selected_indices:
+        return
+
+    selected_candidates = [candidates[i] for i in selected_indices]
+
+    # Ask for SSL certificate once for the batch
+    cert_id, ssl_forced, http2 = 0, False, False
+    if confirm("Apply SSL certificate to all new hosts?", default_yes=False):
+        cert_id, ssl_forced, http2 = _pick_certificate()
+
+    # Create proxy hosts
+    created = 0
+    for c in selected_candidates:
+        default_domain = f"{c['name']}.local"
+        domain = prompt_text(f"Domain for {c['name']} (port {c['host_port']}):",
+                             default=default_domain)
+        if not domain:
+            continue
+
+        data = {
+            "domain_names": [domain],
+            "forward_scheme": "http",
+            "forward_host": c["host_ip"],
+            "forward_port": c["host_port"],
+            "access_list_id": "0",
+            "certificate_id": cert_id,
+            "meta": {"letsencrypt_agree": False, "dns_challenge": False},
+            "advanced_config": "",
+            "locations": [],
+            "block_exploits": True,
+            "caching_enabled": False,
+            "allow_websocket_upgrade": True,
+            "http2_support": http2,
+            "hsts_enabled": ssl_forced,
+            "hsts_subdomains": False,
+            "ssl_forced": ssl_forced,
+            "enabled": True,
+        }
+
+        result = _api("/nginx/proxy-hosts", method="POST", data=data)
+        if result:
+            log_action("NPM Auto-Generate Proxy Host", f"{domain} → {c['host_ip']}:{c['host_port']}")
+            created += 1
+        else:
+            error(f"Failed to create proxy host for {c['name']}")
+
+    if created:
+        success(f"Created {created} proxy host(s)")
+    input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")

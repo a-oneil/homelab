@@ -5,6 +5,7 @@ import ssl
 import time
 import urllib.request
 
+from homelab.auditlog import log_action
 from homelab.config import CFG
 from homelab.plugins import Plugin
 from homelab.ui import C, pick_option, scrollable_list, confirm, info, success, error, warn, bar_chart
@@ -69,6 +70,62 @@ class OpnsensePlugin(Plugin):
             _fetch_stats()
         return _HEADER_CACHE.get("stats") or None
 
+    def get_dashboard_widgets(self):
+        lines = []
+        time_data = _api("/api/diagnostics/system/system_time", silent=True)
+        if time_data:
+            uptime = time_data.get("uptime", "?")
+            load = time_data.get("loadavg", "")
+            parts = [f"up {uptime}"]
+            if load and load != "N/A":
+                parts.append(f"load {load}")
+            lines.append(", ".join(parts))
+
+        intf_data = _api("/api/interfaces/overview/export", silent=True)
+        if intf_data and isinstance(intf_data, dict):
+            up_count = 0
+            down_count = 0
+            for _name, intf in intf_data.items():
+                if isinstance(intf, dict):
+                    if intf.get("status") == "up":
+                        up_count += 1
+                    else:
+                        down_count += 1
+            if up_count or down_count:
+                parts = [f"{C.GREEN}{up_count} up{C.RESET}"]
+                if down_count:
+                    parts.append(f"{C.RED}{down_count} down{C.RESET}")
+                lines.append(f"Interfaces: {', '.join(parts)}")
+
+        if not lines:
+            return []
+        return [{"title": "OPNsense", "lines": lines}]
+
+    def get_health_alerts(self):
+        alerts = []
+        fw = _api("/api/core/firmware/status", silent=True)
+        if fw and isinstance(fw, dict):
+            status = fw.get("status", "")
+            if "update" in status.lower():
+                alerts.append(f"{C.YELLOW}OPNsense:{C.RESET} firmware update available")
+
+        res = _api("/api/diagnostics/system/systemResources", silent=True)
+        if res and isinstance(res, dict):
+            try:
+                cpu = int(res.get("cpu", {}).get("used", "0").rstrip("%"))
+                if cpu > 90:
+                    alerts.append(f"{C.RED}OPNsense:{C.RESET} CPU at {cpu}%")
+            except (ValueError, AttributeError):
+                pass
+            try:
+                mem_str = res.get("memory", {}).get("used", "0")
+                mem = int(mem_str.rstrip("%"))
+                if mem > 90:
+                    alerts.append(f"{C.RED}OPNsense:{C.RESET} memory at {mem}%")
+            except (ValueError, AttributeError):
+                pass
+        return alerts
+
     def get_menu_items(self):
         return [
             ("OPNsense             — router status and interfaces", opnsense_menu),
@@ -102,43 +159,82 @@ def _fetch_stats():
 def opnsense_menu():
     while True:
         idx = pick_option("OPNsense:", [
-            "System Status         — uptime, firmware, CPU, RAM",
-            "Interfaces            — WAN/LAN status, traffic stats",
-            "Firewall Rules        — filter rules with action and status",
-            "Firewall Log          — recent firewall log entries",
-            "ARP Table             — IP <-> MAC mappings",
-            "DHCP Leases           — active leases",
-            "Services              — view and restart system services",
-            "VPN Status            — WireGuard and OpenVPN connections",
-            "Firmware Update       — check for and apply updates",
+            "Network          — interfaces, ARP table, DHCP leases, VPN",
+            "Firewall         — rules and log",
+            "System           — status, services, firmware update",
             "───────────────",
-            "★ Add to Favorites   — pin an action to the main menu",
+            "★ Add to Favorites — pin an action to the main menu",
             "← Back",
         ])
-        if idx == 11:
+        if idx == 5:
             return
-        elif idx == 9:
+        elif idx == 3:
             continue
-        elif idx == 10:
+        elif idx == 4:
             from homelab.plugins import add_plugin_favorite
             add_plugin_favorite(OpnsensePlugin())
         elif idx == 0:
+            _network_menu()
+        elif idx == 1:
+            _firewall_menu()
+        elif idx == 2:
+            _system_menu()
+
+
+def _network_menu():
+    """Submenu for network-related views."""
+    while True:
+        idx = pick_option("Network:", [
+            "Interfaces    — WAN/LAN status, traffic stats",
+            "ARP Table     — IP <-> MAC mappings",
+            "DHCP Leases   — active leases",
+            "VPN Status    — WireGuard and OpenVPN connections",
+            "← Back",
+        ])
+        if idx == 4:
+            return
+        elif idx == 0:
+            _interfaces()
+        elif idx == 1:
+            _arp_table()
+        elif idx == 2:
+            _dhcp_leases()
+        elif idx == 3:
+            _vpn_status()
+
+
+def _firewall_menu():
+    """Submenu for firewall rules and logs."""
+    while True:
+        idx = pick_option("Firewall:", [
+            "Firewall Rules — filter rules with action and status",
+            "Firewall Log   — recent firewall log entries",
+            "← Back",
+        ])
+        if idx == 2:
+            return
+        elif idx == 0:
+            _firewall_rules()
+        elif idx == 1:
+            _firewall_log()
+
+
+def _system_menu():
+    """Submenu for system status, services, and firmware."""
+    while True:
+        idx = pick_option("System:", [
+            "System Status   — uptime, firmware, CPU, RAM",
+            "Services        — view and restart system services",
+            "Firmware Update — check for and apply updates",
+            "← Back",
+        ])
+        if idx == 3:
+            return
+        elif idx == 0:
             _system_status()
         elif idx == 1:
-            _interfaces()
-        elif idx == 2:
-            _firewall_rules()
-        elif idx == 3:
-            _firewall_log()
-        elif idx == 4:
-            _arp_table()
-        elif idx == 5:
-            _dhcp_leases()
-        elif idx == 6:
             _services()
-        elif idx == 7:
-            _vpn_status()
-        elif idx == 8:
+        elif idx == 2:
             _firmware_update()
 
 
@@ -359,11 +455,18 @@ def _firmware_update():
     info("Checking for updates...")
     _api("/api/core/firmware/check", method="POST")
 
-    # Poll status until the check completes
+    # Give the check a moment to start, then poll until it completes
     import time as _time
-    for _ in range(15):
-        status = _api("/api/core/firmware/status", method="POST")
-        if status and status.get("status") != "running":
+    _time.sleep(15)
+    status = None
+    for _ in range(30):
+        status = _api("/api/core/firmware/status")
+        if not status:
+            break
+        s = status.get("status", "")
+        # "running" means the check is still in progress; keep waiting
+        # Also keep waiting if status is empty (check hasn't started yet)
+        if s and s != "running":
             break
         _time.sleep(2)
 
@@ -415,6 +518,7 @@ def _firmware_update():
     info("Starting firmware update...")
     result = _api("/api/core/firmware/update", method="POST")
     if result and result.get("status", "") == "ok":
+        log_action("OPNsense Firmware Update", f"from {current}")
         success("Firmware update started. OPNsense will reboot when complete.")
     else:
         error("Failed to start firmware update.")
@@ -677,6 +781,7 @@ def _service_actions(svc_name, svc_id):
             return
         result = _api(f"/api/core/service/restart/{svc_id}", method="POST")
         if result is not None:
+            log_action("OPNsense Restart Service", svc_name)
             success(f"Restarted: {svc_name}")
         else:
             error(f"Failed to restart {svc_name}.")
@@ -685,12 +790,14 @@ def _service_actions(svc_name, svc_id):
             return
         result = _api(f"/api/core/service/stop/{svc_id}", method="POST")
         if result is not None:
+            log_action("OPNsense Stop Service", svc_name)
             success(f"Stopped: {svc_name}")
         else:
             error(f"Failed to stop {svc_name}.")
     elif idx == 2:
         result = _api(f"/api/core/service/start/{svc_id}", method="POST")
         if result is not None:
+            log_action("OPNsense Start Service", svc_name)
             success(f"Started: {svc_name}")
         else:
             error(f"Failed to start {svc_name}.")

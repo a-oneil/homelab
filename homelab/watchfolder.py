@@ -4,8 +4,9 @@ import os
 import time
 import threading
 
+from homelab.auditlog import log_action
 from homelab.config import CFG, save_config
-from homelab.transport import get_host, rsync_transfer
+from homelab.transport import rsync_transfer
 from homelab.ui import (
     C, pick_option, prompt_text, info, success, error, warn,
 )
@@ -29,7 +30,8 @@ def watch_folder_menu():
             for i, w in enumerate(watches):
                 local = w.get("local", "?")
                 remote = w.get("remote", "?")
-                print(f"    {i + 1}. {local} → {remote}")
+                host = w.get("host", "?")
+                print(f"    {i + 1}. {local} → {host}:{remote}")
         else:
             print(f"  {C.DIM}No watch folders configured.{C.RESET}")
 
@@ -38,7 +40,9 @@ def watch_folder_menu():
             choices.append("Stop watcher")
         else:
             choices.append("Start watcher")
-        choices.extend(["Test sync now", "← Back"])
+        choices.extend(["Test sync now"])
+        choices.sort()
+        choices.append("← Back")
 
         idx = pick_option("", choices)
         choice = choices[idx]
@@ -67,14 +71,19 @@ def _add_watch():
         error(f"Not a directory: {local}")
         return
 
+    host = prompt_text("SSH host (e.g. root@10.0.0.5):")
+    if not host:
+        return
+
     remote = prompt_text("Remote destination (e.g. /mnt/user/incoming):")
     if not remote:
         return
 
     watches = CFG.get("watch_folders", [])
-    watches.append({"local": local, "remote": remote})
+    watches.append({"local": local, "remote": remote, "host": host})
     CFG["watch_folders"] = watches
     save_config(CFG)
+    log_action("Watch Folder Add", f"{local} → {host}:{remote}")
     success(f"Watch folder added: {local} → {remote}")
 
 
@@ -85,7 +94,7 @@ def _remove_watch():
         warn("No watch folders to remove.")
         return
 
-    choices = [f"{w['local']} → {w['remote']}" for w in watches]
+    choices = [f"{w['local']} → {w.get('host', '?')}:{w['remote']}" for w in watches]
     choices.append("Cancel")
     idx = pick_option("Remove which?", choices)
     if idx >= len(watches):
@@ -94,6 +103,7 @@ def _remove_watch():
     removed = watches.pop(idx)
     CFG["watch_folders"] = watches
     save_config(CFG)
+    log_action("Watch Folder Remove", removed['local'])
     success(f"Removed: {removed['local']}")
 
 
@@ -112,12 +122,14 @@ def _start_watcher():
     _WATCHER_STOP.clear()
     _WATCHER_THREAD = threading.Thread(target=_watcher_loop, daemon=True)
     _WATCHER_THREAD.start()
+    log_action("Watcher Start", f"{len(watches)} watch folder(s)")
     success("Watcher started in background.")
 
 
 def _stop_watcher():
     """Stop the background watcher thread."""
     _WATCHER_STOP.set()
+    log_action("Watcher Stop", "")
     success("Watcher stopped.")
 
 
@@ -142,7 +154,9 @@ def _watcher_loop():
         for w in watches:
             local = w.get("local", "")
             remote = w.get("remote", "")
-            if not os.path.isdir(local):
+            host = w.get("host", "")
+            port = w.get("port") or None
+            if not os.path.isdir(local) or not host:
                 continue
 
             current = set(os.listdir(local))
@@ -159,9 +173,9 @@ def _watcher_loop():
                     continue
 
                 is_dir = os.path.isdir(filepath)
-                dest = f"{get_host()}:{remote}/"
+                dest = f"{host}:{remote}/"
                 try:
-                    result = rsync_transfer(filepath, dest, is_dir=is_dir)
+                    result = rsync_transfer(filepath, dest, is_dir=is_dir, port=port)
                     if result.returncode == 0:
                         from homelab.notifications import notify
                         notify("Homelab", f"Auto-uploaded: {fname}")
@@ -181,8 +195,13 @@ def _sync_all_now():
     for w in watches:
         local = w.get("local", "")
         remote = w.get("remote", "")
+        host = w.get("host", "")
+        port = w.get("port") or None
         if not os.path.isdir(local):
             warn(f"Skipping (not found): {local}")
+            continue
+        if not host:
+            warn(f"Skipping (no host configured): {local}")
             continue
 
         files = [f for f in os.listdir(local) if not f.startswith(".")]
@@ -194,8 +213,8 @@ def _sync_all_now():
         for fname in files:
             filepath = os.path.join(local, fname)
             is_dir = os.path.isdir(filepath)
-            dest = f"{get_host()}:{remote}/"
-            result = rsync_transfer(filepath, dest, is_dir=is_dir)
+            dest = f"{host}:{remote}/"
+            result = rsync_transfer(filepath, dest, is_dir=is_dir, port=port)
             if result.returncode == 0:
                 success(f"  Uploaded: {fname}")
             else:

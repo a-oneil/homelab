@@ -2,7 +2,8 @@
 
 import os
 import threading
-from homelab.transport import get_host, rsync_transfer
+from homelab.auditlog import log_action
+from homelab.transport import rsync_transfer
 from homelab.ui import C, pick_option, prompt_text, success, error, warn
 
 
@@ -11,6 +12,23 @@ _QUEUE_LOCK = threading.Lock()
 _WORKER_THREAD = None
 _WORKER_STOP = threading.Event()
 _COMPLETED = []
+
+
+def transfers_menu():
+    """Combined menu for Transfer Queue and Watch Folders."""
+    while True:
+        idx = pick_option("Transfers:", [
+            "Transfer Queue       — background batched transfers",
+            "Watch Folders        — auto-upload monitored directories",
+            "← Back",
+        ])
+        if idx == 2:
+            return
+        elif idx == 0:
+            transfer_queue_menu()
+        elif idx == 1:
+            from homelab.watchfolder import watch_folder_menu
+            watch_folder_menu()
 
 
 def transfer_queue_menu():
@@ -66,10 +84,11 @@ def transfer_queue_menu():
             success("History cleared.")
 
 
-def enqueue(source, dest, is_dir=False):
+def enqueue(source, dest, is_dir=False, host=None, port=None):
     """Add a transfer to the queue. Can be called from other modules."""
+    log_action("Transfer Queued", f"{os.path.basename(source)} → {dest}")
     with _QUEUE_LOCK:
-        _QUEUE.append({"source": source, "dest": dest, "is_dir": is_dir})
+        _QUEUE.append({"source": source, "dest": dest, "is_dir": is_dir, "host": host, "port": port})
     # Auto-start worker if not running
     if _WORKER_THREAD is None or not _WORKER_THREAD.is_alive():
         _start_worker()
@@ -85,13 +104,17 @@ def _add_to_queue():
         error("Path does not exist.")
         return
 
+    host = prompt_text("SSH host (e.g. root@10.0.0.5):")
+    if not host:
+        return
+
     dest = prompt_text("Remote destination (e.g. /mnt/user/incoming):")
     if not dest:
         return
 
     is_dir = os.path.isdir(source)
-    dest_spec = f"{get_host()}:{dest}/"
-    enqueue(source, dest_spec, is_dir=is_dir)
+    dest_spec = f"{host}:{dest}/"
+    enqueue(source, dest_spec, is_dir=is_dir, host=host)
     success(f"Queued: {os.path.basename(source)}")
 
 
@@ -127,7 +150,7 @@ def _worker_loop():
             continue
 
         try:
-            result = rsync_transfer(item["source"], item["dest"], is_dir=item.get("is_dir", False))
+            result = rsync_transfer(item["source"], item["dest"], is_dir=item.get("is_dir", False), port=item.get("port"))
             item["success"] = result.returncode == 0
             if result.returncode == 0:
                 try:

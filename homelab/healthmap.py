@@ -7,6 +7,93 @@ import urllib.request
 from homelab.config import CFG
 from homelab.ui import C, pick_option
 
+# Cache Uptime Kuma monitor status for the duration of one health map render
+_kuma_status_cache = None
+
+
+def _load_kuma_status():
+    """Load monitor status from Uptime Kuma (returns dict mapping URLs/hostnames to UP/DOWN)."""
+    global _kuma_status_cache
+    if _kuma_status_cache is not None:
+        return _kuma_status_cache
+
+    _kuma_status_cache = {}
+    if not (CFG.get("uptimekuma_url") and CFG.get("uptimekuma_username")
+            and CFG.get("uptimekuma_password")):
+        return _kuma_status_cache
+
+    try:
+        from homelab.plugins.uptimekuma import _connect, _get_monitors_with_status, _STATUS_UP
+        api = _connect()
+        if not api:
+            return _kuma_status_cache
+        try:
+            monitors = _get_monitors_with_status(api)
+            for m in monitors:
+                if not m.get("active"):
+                    continue
+                hb = m.get("_hb_status")
+                if hb is None:
+                    continue
+                is_up = (hb == _STATUS_UP)
+                # Index by URL (normalized)
+                url = (m.get("url") or "").rstrip("/").lower()
+                if url:
+                    _kuma_status_cache[url] = is_up
+                # Also index by hostname:port and just hostname
+                hostname = m.get("hostname", "")
+                port = m.get("port", "")
+                if hostname:
+                    _kuma_status_cache[hostname.lower()] = is_up
+                    if port:
+                        _kuma_status_cache[f"{hostname.lower()}:{port}"] = is_up
+                # Index by monitor name for flexible matching
+                name = (m.get("name") or "").lower()
+                if name:
+                    _kuma_status_cache[f"name:{name}"] = is_up
+        finally:
+            try:
+                api.disconnect()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return _kuma_status_cache
+
+
+def _kuma_lookup(url=None, name=None):
+    """Look up a service's status from Uptime Kuma cache. Returns True/False/None."""
+    cache = _load_kuma_status()
+    if not cache:
+        return None
+    # Try URL match
+    if url:
+        normalized = url.rstrip("/").lower()
+        if normalized in cache:
+            return cache[normalized]
+        # Try without path (just scheme + host)
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(normalized)
+            base = f"{parsed.scheme}://{parsed.netloc}"
+            if base in cache:
+                return cache[base]
+            # Try just the host
+            if parsed.hostname and parsed.hostname in cache:
+                return cache[parsed.hostname]
+            if parsed.hostname and parsed.port:
+                hostport = f"{parsed.hostname}:{parsed.port}"
+                if hostport in cache:
+                    return cache[hostport]
+        except Exception:
+            pass
+    # Try name match
+    if name:
+        key = f"name:{name.lower()}"
+        if key in cache:
+            return cache[key]
+    return None
+
 
 def _check_http(url, timeout=5):
     """Return True if a URL responds with 2xx/3xx."""
@@ -21,6 +108,14 @@ def _check_http(url, timeout=5):
             return resp.status < 400
     except Exception:
         return False
+
+
+def _check_service(url=None, name=None, timeout=5):
+    """Check service status — prefer Kuma data, fall back to HTTP check."""
+    kuma = _kuma_lookup(url=url, name=name)
+    if kuma is not None:
+        return kuma
+    return _check_http(url, timeout=timeout)
 
 
 def _check_ssh(host, timeout=3):
@@ -57,9 +152,11 @@ def _status_label(status):
 
 def health_map(plugins):
     """Build and display the service health map."""
+    global _kuma_status_cache
     from homelab.ui import info
 
     while True:
+        _kuma_status_cache = None  # Reset cache each refresh
         info("Checking service health (this may take a few seconds)...")
         print()
 
@@ -102,7 +199,7 @@ def health_map(plugins):
         # Proxmox
         proxmox_url = CFG.get("proxmox_url", "")
         if proxmox_url:
-            status = _check_http(proxmox_url)
+            status = _check_service(url=proxmox_url, name="Proxmox")
             dot = _status_dot(status)
             lines.append(f"  {dot} Proxmox VE             {C.DIM}{proxmox_url}{C.RESET}  {_status_label(status)}")
 
@@ -115,12 +212,12 @@ def health_map(plugins):
             lines.append(f"  {'─' * 50}")
 
             if CFG.get("unifi_url"):
-                status = _check_http(CFG["unifi_url"])
+                status = _check_service(url=CFG["unifi_url"], name="UniFi")
                 dot = _status_dot(status)
                 lines.append(f"  {dot} UniFi Controller       {C.DIM}{CFG['unifi_url']}{C.RESET}  {_status_label(status)}")
 
             if CFG.get("opnsense_url"):
-                status = _check_http(CFG["opnsense_url"])
+                status = _check_service(url=CFG["opnsense_url"], name="OPNsense")
                 dot = _status_dot(status)
                 lines.append(f"  {dot} OPNsense               {C.DIM}{CFG['opnsense_url']}{C.RESET}  {_status_label(status)}")
 
@@ -147,15 +244,15 @@ def health_map(plugins):
             ("immich_url", "Immich"),
             ("syncthing_url", "Syncthing"),
         ]
-        active_services = [(key, name) for key, name in services if CFG.get(key)]
+        active_services = [(key, sname) for key, sname in services if CFG.get(key)]
         if active_services:
             lines.append(f"  {C.BOLD}Services{C.RESET}")
             lines.append(f"  {'─' * 50}")
-            for key, name in active_services:
+            for key, sname in active_services:
                 url = CFG[key]
-                status = _check_http(url)
+                status = _check_service(url=url, name=sname)
                 dot = _status_dot(status)
-                lines.append(f"  {dot} {name:<22} {C.DIM}{url}{C.RESET}  {_status_label(status)}")
+                lines.append(f"  {dot} {sname:<22} {C.DIM}{url}{C.RESET}  {_status_label(status)}")
             lines.append("")
 
         # Media layer
@@ -168,15 +265,15 @@ def health_map(plugins):
             ("sabnzbd_url", "SABnzbd"),
             ("deluge_url", "Deluge"),
         ]
-        active_media = [(key, name) for key, name in media if CFG.get(key)]
+        active_media = [(key, mname) for key, mname in media if CFG.get(key)]
         if active_media:
             lines.append(f"  {C.BOLD}Media{C.RESET}")
             lines.append(f"  {'─' * 50}")
-            for key, name in active_media:
+            for key, mname in active_media:
                 url = CFG[key]
-                status = _check_http(url)
+                status = _check_service(url=url, name=mname)
                 dot = _status_dot(status)
-                lines.append(f"  {dot} {name:<22} {C.DIM}{url}{C.RESET}  {_status_label(status)}")
+                lines.append(f"  {dot} {mname:<22} {C.DIM}{url}{C.RESET}  {_status_label(status)}")
             lines.append("")
 
         lines.append("")

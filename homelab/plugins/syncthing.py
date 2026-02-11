@@ -6,7 +6,8 @@ import urllib.request
 
 from homelab.config import CFG
 from homelab.plugins import Plugin
-from homelab.ui import C, pick_option, scrollable_list, success, error, warn
+from homelab.ui import C, pick_option, bar_chart, confirm, prompt_text, info, success, error, warn
+from homelab.auditlog import log_action
 
 _HEADER_CACHE = {"timestamp": 0, "stats": ""}
 _CACHE_TTL = 300
@@ -88,9 +89,9 @@ def _fetch_stats():
 def syncthing_menu():
     while True:
         idx = pick_option("Syncthing:", [
-            "Folders              — sync status and progress",
-            "Devices              — connected peers",
             "Conflicts            — files with sync conflicts",
+            "Devices              — connected peers",
+            "Folders              — sync status and progress",
             "System Status        — version, uptime, connections",
             "───────────────",
             "★ Add to Favorites   — pin an action to the main menu",
@@ -104,11 +105,11 @@ def syncthing_menu():
             from homelab.plugins import add_plugin_favorite
             add_plugin_favorite(SyncthingPlugin())
         elif idx == 0:
-            _list_folders()
+            _show_conflicts()
         elif idx == 1:
             _list_devices()
         elif idx == 2:
-            _show_conflicts()
+            _list_folders()
         elif idx == 3:
             _system_status()
 
@@ -130,13 +131,14 @@ def _list_folders():
         for f in folders:
             fid = f.get("id", "?")
             label = f.get("label", fid)
-            # Get folder status
             status = _api(f"/db/status?folder={fid}")
             if status:
                 state = status.get("state", "?")
-                completion = status.get("globalBytes", 0)
+                global_bytes = status.get("globalBytes", 0)
+                in_sync_bytes = status.get("inSyncBytes", 0)
                 need_bytes = status.get("needBytes", 0)
-                if state == "idle":
+                sync_pct = (in_sync_bytes / global_bytes * 100) if global_bytes > 0 else 100
+                if state == "idle" and sync_pct >= 99.9:
                     icon = f"{C.GREEN}●{C.RESET}"
                 elif state == "syncing":
                     icon = f"{C.YELLOW}●{C.RESET}"
@@ -144,12 +146,13 @@ def _list_folders():
                     icon = f"{C.RED}●{C.RESET}"
                 else:
                     icon = f"{C.DIM}○{C.RESET}"
-                total_gb = completion / (1024 ** 3) if completion else 0
+                total_gb = global_bytes / (1024 ** 3) if global_bytes else 0
+                pct_str = f"{sync_pct:.0f}%" if sync_pct < 100 else "100%"
                 need_mb = need_bytes / (1024 ** 2) if need_bytes else 0
                 extra = f"  {C.YELLOW}need {need_mb:.1f}MB{C.RESET}" if need_bytes else ""
-                choices.append(f"{icon} {label:<30} [{state}]  {total_gb:.1f}GB{extra}")
+                choices.append(f"{icon} {label:<25} [{state}] {pct_str:<5} {total_gb:.1f}GB{extra}")
             else:
-                choices.append(f"{C.DIM}○{C.RESET} {label:<30} [unknown]")
+                choices.append(f"{C.DIM}○{C.RESET} {label:<25} [unknown]")
 
         choices.append("← Back")
         idx = pick_option("Folders:", choices)
@@ -186,19 +189,21 @@ def _folder_detail(folder_id):
     if status:
         state = status.get("state", "?")
         global_files = status.get("globalFiles", 0)
-        global_bytes = status.get("globalBytes", 0) / (1024 ** 3)
+        global_bytes_raw = status.get("globalBytes", 0)
+        in_sync_bytes = status.get("inSyncBytes", 0)
+        global_bytes = global_bytes_raw / (1024 ** 3)
         need_files = status.get("needFiles", 0)
         need_bytes = status.get("needBytes", 0) / (1024 ** 2)
         errors = status.get("errors", 0)
 
         print(f"  State: {state}")
         print(f"  Files: {global_files:,}  ({global_bytes:.2f} GB)")
+        print(f"  Sync:  {bar_chart(in_sync_bytes, global_bytes_raw, width=25)}")
         if need_files:
             print(f"  {C.YELLOW}Need: {need_files} files ({need_bytes:.1f} MB){C.RESET}")
         if errors:
             print(f"  {C.RED}Errors: {errors}{C.RESET}")
 
-    # Show shared devices
     devices = folder.get("devices", [])
     if devices:
         print(f"\n  {C.BOLD}Shared with:{C.RESET}")
@@ -206,7 +211,7 @@ def _folder_detail(folder_id):
             dev_id = d.get("deviceID", "?")[:12]
             print(f"    {dev_id}...")
 
-    choices = ["Rescan", "★ Favorite", "← Back"]
+    choices = ["Rescan", "Ignore Patterns", "★ Favorite", "← Back"]
     aidx = pick_option(f"Folder: {label}", choices)
     al = choices[aidx]
 
@@ -218,41 +223,63 @@ def _folder_detail(folder_id):
     elif al == "Rescan":
         result = _api(f"/db/scan?folder={folder_id}", method="POST")
         if result is not None:
+            log_action("Syncthing Rescan", label)
             success(f"Rescan triggered for {label}")
         else:
             error("Failed to trigger rescan.")
+    elif al == "Ignore Patterns":
+        _ignore_patterns(folder_id, label)
 
 
 def _list_devices():
-    """List all connected devices."""
-    config = _api("/config")
-    connections = _api("/system/connections")
-    if not config:
-        error("Could not fetch config.")
-        return
+    """List all connected devices with bandwidth info."""
+    while True:
+        config = _api("/config")
+        connections = _api("/system/connections")
+        if not config:
+            error("Could not fetch config.")
+            return
 
-    devices = config.get("devices", [])
-    conns = connections.get("connections", {}) if connections else {}
+        devices = config.get("devices", [])
+        conns = connections.get("connections", {}) if connections else {}
 
-    rows = []
-    for d in devices:
-        dev_id = d.get("deviceID", "?")
-        name = d.get("name", dev_id[:12])
-        conn = conns.get(dev_id, {})
-        connected = conn.get("connected", False)
-        address = conn.get("address", "?")
+        choices = []
+        for d in devices:
+            dev_id = d.get("deviceID", "?")
+            name = d.get("name", dev_id[:12])
+            conn = conns.get(dev_id, {})
+            connected = conn.get("connected", False)
+            address = conn.get("address", "?")
 
-        icon = "●" if connected else "○"
-        if connected:
-            in_bytes = conn.get("inBytesTotal", 0) / (1024 ** 2)
-            out_bytes = conn.get("outBytesTotal", 0) / (1024 ** 2)
-            traffic = f"  ↓{in_bytes:.0f}MB ↑{out_bytes:.0f}MB"
+            if connected:
+                icon = f"{C.GREEN}●{C.RESET}"
+                in_bytes = conn.get("inBytesTotal", 0) / (1024 ** 2)
+                out_bytes = conn.get("outBytesTotal", 0) / (1024 ** 2)
+                conn_type = conn.get("type", "")
+                traffic = f"  ↓{in_bytes:.0f}MB ↑{out_bytes:.0f}MB"
+                type_str = f"  [{conn_type}]" if conn_type else ""
+            else:
+                icon = f"{C.DIM}○{C.RESET}"
+                traffic = ""
+                type_str = ""
+
+            choices.append(f"{icon} {name:<25} {address}{traffic}{type_str}")
+
+        choices.extend([
+            "───────────────",
+            "Device Discovery     — show discovered devices",
+            "← Back",
+        ])
+
+        idx = pick_option(f"Syncthing Devices ({len(devices)}):", choices)
+        if idx == len(choices) - 1:
+            return
+        elif idx == len(choices) - 3:
+            continue
+        elif idx == len(choices) - 2:
+            _device_discovery()
         else:
-            traffic = ""
-
-        rows.append(f"{icon} {name:<25} {address}{traffic}")
-
-    scrollable_list(f"Syncthing Devices ({len(rows)}):", rows)
+            continue
 
 
 def _show_conflicts():
@@ -311,6 +338,101 @@ def _system_status():
         out_rate = total.get("outBytesTotal", 0) / (1024 ** 3)
         print(f"  {C.BOLD}Total In:{C.RESET}  {in_rate:.2f} GB")
         print(f"  {C.BOLD}Total Out:{C.RESET} {out_rate:.2f} GB")
+
+    discovery = _api("/system/discovery")
+    if discovery and isinstance(discovery, dict):
+        print(f"  {C.BOLD}Discovered:{C.RESET} {len(discovery)} device(s)")
+
+    print()
+    input(f"  {C.DIM}Press Enter to continue...{C.RESET}")
+
+
+def _ignore_patterns(folder_id, label):
+    """View and edit .stignore patterns for a folder."""
+    while True:
+        data = _api(f"/db/ignores?folder={folder_id}")
+        if data is None:
+            error("Could not fetch ignore patterns.")
+            return
+
+        patterns = data.get("patterns", []) or []
+
+        hdr_lines = [f"\n  {C.BOLD}.stignore — {label}{C.RESET}\n"]
+        if patterns:
+            for p in patterns:
+                hdr_lines.append(f"    {p}")
+        else:
+            hdr_lines.append(f"    {C.DIM}(no patterns){C.RESET}")
+        hdr_lines.append("")
+
+        idx = pick_option("", [
+            "Add pattern          — add a new ignore pattern",
+            "Replace all          — edit the entire ignore list",
+            "Clear all patterns",
+            "← Back",
+        ], header="\n".join(hdr_lines))
+
+        if idx == 3:
+            return
+        elif idx == 0:
+            new_pattern = prompt_text("Pattern (e.g. *.tmp, .DS_Store, /build):")
+            if not new_pattern:
+                continue
+            patterns.append(new_pattern)
+            result = _api(f"/db/ignores?folder={folder_id}", method="POST",
+                          data={"patterns": patterns})
+            if result is not None:
+                log_action("Syncthing Ignore Add", f"{label}: {new_pattern}")
+                success(f"Added pattern: {new_pattern}")
+            else:
+                error("Failed to update ignore patterns.")
+        elif idx == 1:
+            current = ", ".join(patterns) if patterns else ""
+            new_text = prompt_text("Patterns (comma-separated):", default=current)
+            if new_text:
+                new_patterns = [p.strip() for p in new_text.split(",") if p.strip()]
+                result = _api(f"/db/ignores?folder={folder_id}", method="POST",
+                              data={"patterns": new_patterns})
+                if result is not None:
+                    log_action("Syncthing Ignore Update", f"{label}: {len(new_patterns)} patterns")
+                    success(f"Updated {len(new_patterns)} patterns.")
+                else:
+                    error("Failed to update patterns.")
+        elif idx == 2:
+            if confirm("Clear all ignore patterns?", default_yes=False):
+                result = _api(f"/db/ignores?folder={folder_id}", method="POST",
+                              data={"patterns": []})
+                if result is not None:
+                    log_action("Syncthing Ignore Clear", label)
+                    success("All patterns cleared.")
+                else:
+                    error("Failed to clear patterns.")
+
+
+def _device_discovery():
+    """Show discovered devices and addresses."""
+    discovery = _api("/system/discovery")
+    if not discovery or not isinstance(discovery, dict):
+        info("No discovered devices.")
+        input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
+        return
+
+    print(f"\n  {C.BOLD}Device Discovery{C.RESET}\n")
+    for dev_id, addresses in discovery.items():
+        short_id = dev_id[:12] if len(dev_id) > 12 else dev_id
+        print(f"  {C.BOLD}{short_id}...{C.RESET}")
+        if isinstance(addresses, list):
+            for addr in addresses:
+                print(f"    {addr}")
+        elif isinstance(addresses, dict):
+            for addr_key, addr_val in addresses.items():
+                if isinstance(addr_val, list):
+                    for a in addr_val:
+                        print(f"    {a}")
+                else:
+                    print(f"    {addr_val}")
+        else:
+            print(f"    {addresses}")
 
     print()
     input(f"  {C.DIM}Press Enter to continue...{C.RESET}")

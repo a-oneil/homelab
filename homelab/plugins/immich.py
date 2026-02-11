@@ -7,6 +7,7 @@ import urllib.request
 from homelab.config import CFG
 from homelab.plugins import Plugin
 from homelab.ui import C, pick_option, info, success, error, warn
+from homelab.auditlog import log_action
 
 _HEADER_CACHE = {"timestamp": 0, "stats": ""}
 _CACHE_TTL = 300
@@ -96,11 +97,11 @@ def _fetch_stats():
 def immich_menu():
     while True:
         idx = pick_option("Immich:", [
-            "Library Stats        — photo/video counts, storage usage",
-            "Server Info          — version, features, storage",
-            "Jobs                 — view and trigger background jobs",
-            "Recent Uploads       — latest photos and videos",
             "Albums               — browse albums",
+            "Jobs                 — view and trigger background jobs",
+            "Library Stats        — photo/video counts, storage usage",
+            "Recent Uploads       — latest photos and videos",
+            "Server Info          — version, features, storage",
             "───────────────",
             "★ Add to Favorites   — pin an action to the main menu",
             "← Back",
@@ -113,15 +114,15 @@ def immich_menu():
             from homelab.plugins import add_plugin_favorite
             add_plugin_favorite(ImmichPlugin())
         elif idx == 0:
-            _show_stats()
+            _browse_albums()
         elif idx == 1:
-            _server_info()
-        elif idx == 2:
             _manage_jobs()
+        elif idx == 2:
+            _show_stats()
         elif idx == 3:
             _recent_uploads()
         elif idx == 4:
-            _browse_albums()
+            _server_info()
 
 
 def _show_stats():
@@ -224,16 +225,19 @@ def _job_actions(job_name):
     elif idx == 0:
         result = _api(f"/jobs/{job_name}", method="PUT", data={"command": "start"})
         if result:
+            log_action("Immich Start Job", job_name)
             success(f"Started: {job_name}")
         else:
             error("Failed to start job.")
     elif idx == 1:
         result = _api(f"/jobs/{job_name}", method="PUT", data={"command": "pause"})
         if result:
+            log_action("Immich Pause Job", job_name)
             success(f"Paused: {job_name}")
     elif idx == 2:
         result = _api(f"/jobs/{job_name}", method="PUT", data={"command": "resume"})
         if result:
+            log_action("Immich Resume Job", job_name)
             success(f"Resumed: {job_name}")
 
 

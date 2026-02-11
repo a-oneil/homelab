@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from homelab.config import CFG, CONFIG_PATH, HISTORY_PATH, save_config
 from homelab.ui import C, pick_option, success, warn, prompt_text
 from homelab.files import show_history, manage_bookmarks
+from homelab.auditlog import log_action
 from homelab.plugins.unraid import UnraidPlugin
 from homelab.plugins.proxmox import ProxmoxPlugin
 from homelab.plugins.unifi import UnifiPlugin
@@ -21,12 +22,15 @@ from homelab.plugins.uptimekuma import UptimeKumaPlugin
 from homelab.plugins.npm import NpmPlugin
 from homelab.plugins.tailscale import TailscalePlugin
 from homelab.plugins.forgejo import ForgejoPlugin
+from homelab.plugins.github import GitHubPlugin
 from homelab.plugins.immich import ImmichPlugin
 from homelab.plugins.syncthing import SyncthingPlugin
 from homelab.plugins.sonarr import SonarrPlugin
 from homelab.plugins.radarr import RadarrPlugin
 from homelab.plugins.lidarr import LidarrPlugin
 from homelab.plugins.speedtest import SpeedtestPlugin
+from homelab.plugins.dockerhost import DockerHostPlugin
+from homelab.plugins.ansible import AnsiblePlugin
 
 # ─── Plugin Registry ───────────────────────────────────────────────────────
 
@@ -44,12 +48,15 @@ PLUGINS = [
     NpmPlugin(),
     TailscalePlugin(),
     ForgejoPlugin(),
+    GitHubPlugin(),
     ImmichPlugin(),
     SyncthingPlugin(),
     SonarrPlugin(),
     RadarrPlugin(),
     LidarrPlugin(),
     SpeedtestPlugin(),
+    DockerHostPlugin(),
+    AnsiblePlugin(),
 ]
 
 
@@ -58,6 +65,20 @@ PLUGINS = [
 def _edit_text_setting(key, label, hint=""):
     """Generic text setting editor."""
     current = CFG.get(key, "")
+    if current:
+        idx = pick_option(f"{label}: {current}", [
+            "Edit value",
+            "Clear value",
+            "← Back",
+        ])
+        if idx == 2:
+            return
+        elif idx == 1:
+            CFG[key] = ""
+            save_config(CFG)
+            log_action("Setting Changed", f"{key} = (cleared)")
+            success(f"Cleared {label.lower()}")
+            return
     prompt_msg = f"{label}"
     if hint:
         prompt_msg += f" ({hint})"
@@ -68,6 +89,7 @@ def _edit_text_setting(key, label, hint=""):
     if val:
         CFG[key] = val
         save_config(CFG)
+        log_action("Setting Changed", f"{key} = {val}")
         success(f"Updated {label.lower()}")
 
 
@@ -109,6 +131,7 @@ def _manage_favorites(all_actions):
                 key = all_actions[available[sel]]
                 CFG.setdefault("favorites", []).append(key)
                 save_config(CFG)
+                log_action("Favorite Add", available[sel])
                 success(f"Pinned: {available[sel]}")
         elif idx == 1:
             if not favs:
@@ -120,6 +143,7 @@ def _manage_favorites(all_actions):
             if sel < len(favs):
                 CFG["favorites"].pop(sel)
                 save_config(CFG)
+                log_action("Favorite Remove", display_names[sel])
                 success(f"Unpinned: {display_names[sel]}")
         elif idx == 2:
             if len(favs) < 2:
@@ -150,6 +174,7 @@ def _manage_favorites(all_actions):
             item = CFG["favorites"].pop(sel)
             CFG["favorites"].insert(target, item)
             save_config(CFG)
+            log_action("Favorite Reorder", display_names[sel])
             success(f"Moved: {display_names[sel]}")
 
 
@@ -352,11 +377,17 @@ def edit_settings(all_actions):
             continue
         elif key == "__theme":
             from homelab.themes import pick_theme
+            old_theme = CFG.get("theme", "default")
             pick_theme()
+            new_theme = CFG.get("theme", "default")
+            if new_theme != old_theme:
+                log_action("Theme Changed", new_theme)
         elif key == "__export_config":
             _export_config()
+            log_action("Config Export", "")
         elif key == "__import_config":
             _import_config()
+            log_action("Config Import", "")
         elif key == "__bookmarks":
             manage_bookmarks()
         elif key == "__favorites":
@@ -364,11 +395,13 @@ def edit_settings(all_actions):
         elif key == "__toggle_notifications":
             CFG["notifications"] = not CFG.get("notifications", True)
             save_config(CFG)
+            log_action("Setting Changed", f"notifications = {'ON' if CFG['notifications'] else 'OFF'}")
             success(f"Notifications: {'ON' if CFG['notifications'] else 'OFF'}")
         elif key == "__toggle_dry_run":
             CFG["dry_run"] = not CFG.get("dry_run", False)
             save_config(CFG)
             state = "ON" if CFG["dry_run"] else "OFF"
+            log_action("Setting Changed", f"dry_run = {state}")
             success(f"Dry run mode: {state}")
             if CFG["dry_run"]:
                 warn("No actual transfers or deletions will occur.")
@@ -378,6 +411,7 @@ def edit_settings(all_actions):
                 try:
                     CFG[key] = int(val)
                     save_config(CFG)
+                    log_action("Setting Changed", f"disk_space_warn_gb = {val}")
                     success(f"Disk warning threshold: {val} GB")
                 except ValueError:
                     from homelab.ui import error
@@ -469,7 +503,10 @@ def _refresh_header_data():
         alerts = []
         try:
             from homelab.healthmonitor import refresh_health_alerts
-            refresh_health_alerts()
+            # Check SSH health for the Unraid host if configured
+            unraid_host = CFG.get("unraid_ssh_host", "")
+            if unraid_host:
+                refresh_health_alerts(host=unraid_host)
             from homelab.healthmonitor import get_health_alerts
             alerts = get_health_alerts(PLUGINS)
         except Exception:
@@ -537,15 +574,14 @@ def get_header():
 def _build_all_actions():
     """Build the global action map for favorites."""
     actions = {
-        "History": "show_history",
-        "Bookmarks": "manage_bookmarks",
         "Settings": "edit_settings",
         "Status Dashboard": "status_dashboard",
-        "Watch Folders": "watch_folder_menu",
-        "Transfer Queue": "transfer_queue_menu",
+        "Transfers": "transfers_menu",
         "Quick Connect": "quick_connect_menu",
-        "Container Updates": "check_container_updates",
+        "Docker Servers": "docker_servers_menu",
+        "Container Updates": "check_all_container_updates",
         "Audit Log": "audit_log_menu",
+        "Scheduled Tasks": "scheduler_menu",
     }
     # Add plugin actions (file ops, services, etc.)
     for plugin in PLUGINS:
@@ -566,22 +602,24 @@ def _resolve_favorite(fav):
         return None
     # String key
     from homelab.dashboard import status_dashboard
-    from homelab.watchfolder import watch_folder_menu
-    from homelab.transferqueue import transfer_queue_menu
+    from homelab.transferqueue import transfers_menu
     from homelab.quickconnect import quick_connect_menu
-    from homelab.containerupdates import check_container_updates
+    from homelab.containerupdates import check_all_container_updates
     from homelab.auditlog import audit_log_menu
+    from homelab.scheduler import scheduler_menu
+    from homelab.plugins.dockerhost import docker_servers_menu
 
     func_map = {
         "show_history": show_history,
         "manage_bookmarks": manage_bookmarks,
         "edit_settings": lambda: edit_settings(_build_all_actions()),
         "status_dashboard": lambda: status_dashboard(PLUGINS),
-        "watch_folder_menu": watch_folder_menu,
-        "transfer_queue_menu": transfer_queue_menu,
+        "transfers_menu": transfers_menu,
         "quick_connect_menu": quick_connect_menu,
-        "check_container_updates": check_container_updates,
+        "docker_servers_menu": docker_servers_menu,
+        "check_all_container_updates": check_all_container_updates,
         "audit_log_menu": audit_log_menu,
+        "scheduler_menu": scheduler_menu,
     }
     for plugin in PLUGINS:
         if plugin.is_configured():
@@ -613,56 +651,49 @@ def build_main_menu():
         actions.append(None)
         action_keys.append(None)
 
-    # Services (only configured ones)
+    # Services (only configured ones) — sorted alphabetically
+    service_entries = []
     for plugin in PLUGINS:
         if plugin.is_configured():
             for label, func in plugin.get_menu_items():
-                menu_items.append(label)
-                actions.append(func)
-                # Derive a key from the plugin action registry
                 key = None
                 for name, (pkey, pfunc) in plugin.get_actions().items():
                     if pfunc is func:
                         key = pkey
                         break
-                action_keys.append(key)
+                service_entries.append((label, func, key))
+    service_entries.sort(key=lambda e: e[0].strip().lower())
+    for label, func, key in service_entries:
+        menu_items.append(label)
+        actions.append(func)
+        action_keys.append(key)
 
-    # Tools section
+    # Tools section — sorted alphabetically
     menu_items.append("───────────────")
     actions.append(None)
     action_keys.append(None)
 
     from homelab.dashboard import status_dashboard
-    from homelab.watchfolder import watch_folder_menu
-    from homelab.transferqueue import transfer_queue_menu
+    from homelab.transferqueue import transfers_menu
     from homelab.quickconnect import quick_connect_menu
-    from homelab.containerupdates import check_container_updates
+    from homelab.containerupdates import check_all_container_updates
     from homelab.auditlog import audit_log_menu
+    from homelab.scheduler import scheduler_menu
+    from homelab.plugins.dockerhost import docker_servers_menu
 
-    menu_items.append("Status Dashboard     — overview of all services")
-    actions.append(lambda: status_dashboard(PLUGINS))
-    action_keys.append("status_dashboard")
-    menu_items.append("Quick Connect        — SSH into any configured host")
-    actions.append(quick_connect_menu)
-    action_keys.append("quick_connect_menu")
-    menu_items.append("Container Updates    — check Docker images for updates")
-    actions.append(check_container_updates)
-    action_keys.append("check_container_updates")
-    menu_items.append("Watch Folders        — auto-upload monitored directories")
-    actions.append(watch_folder_menu)
-    action_keys.append("watch_folder_menu")
-    menu_items.append("Transfer Queue       — background batched transfers")
-    actions.append(transfer_queue_menu)
-    action_keys.append("transfer_queue_menu")
-    menu_items.append("History              — past transfers")
-    actions.append(show_history)
-    action_keys.append("show_history")
-    menu_items.append("Bookmarks            — saved folder shortcuts")
-    actions.append(manage_bookmarks)
-    action_keys.append("manage_bookmarks")
-    menu_items.append("Audit Log            — action history and search")
-    actions.append(audit_log_menu)
-    action_keys.append("audit_log_menu")
+    tools = [
+        ("Audit Log            — actions, transfers, and search", audit_log_menu, "audit_log_menu"),
+        ("Container Updates    — check Docker images for updates", check_all_container_updates, "check_all_container_updates"),
+        ("Docker Servers       — manage Linux servers with Docker", docker_servers_menu, "docker_servers_menu"),
+        ("Quick Connect        — SSH into any host, manage keys", quick_connect_menu, "quick_connect_menu"),
+        ("Scheduled Tasks      — recurring automated actions", scheduler_menu, "scheduler_menu"),
+        ("Status Dashboard     — overview of all services", lambda: status_dashboard(PLUGINS), "status_dashboard"),
+        ("Transfers            — queue and watch folders", transfers_menu, "transfers_menu"),
+    ]
+    for label, func, key in tools:
+        menu_items.append(label)
+        actions.append(func)
+        action_keys.append(key)
 
     menu_items.append("───────────────")
     actions.append(None)
@@ -711,6 +742,10 @@ def main():
 
     # Kick off header data refresh in background so startup is never blocked
     _schedule_header_refresh()
+
+    # Start scheduled tasks if any are configured
+    from homelab.scheduler import start_scheduler
+    start_scheduler()
 
     # Session restore — offer to jump back to last visited menu item
     last_menu = CFG.get("session_last_menu", "")

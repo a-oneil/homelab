@@ -6,8 +6,8 @@ from homelab.ui import C, pick_option, prompt_text, success, error, rebuild_styl
 # Each theme defines an accent color that drives C.ACCENT and the questionary style.
 THEMES = {
     "default": {
-        "accent_color": "#5f9ea0",
-        "description": "Calm teal (CadetBlue)",
+        "accent_color": "#bd93f9",
+        "description": "Purple haze (Dracula)",
     },
     "dracula": {
         "accent_color": "#bd93f9",

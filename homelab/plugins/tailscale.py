@@ -4,6 +4,7 @@ import json
 import time
 
 from homelab.config import CFG
+from homelab.auditlog import log_action
 from homelab.plugins import Plugin
 from homelab.ui import C, pick_option, confirm, info, success, error
 
@@ -11,10 +12,14 @@ _HEADER_CACHE = {"timestamp": 0, "stats": ""}
 _CACHE_TTL = 300
 
 
+def _get_host():
+    return CFG.get("unraid_ssh_host", "")
+
+
 def _ts_cmd(args, capture=True):
-    """Run a tailscale CLI command via SSH on the Unraid server."""
+    """Run a tailscale CLI command via SSH."""
     from homelab.transport import ssh_run
-    return ssh_run(f"tailscale {args}")
+    return ssh_run(f"tailscale {args}", host=_get_host())
 
 
 def _ts_status():
@@ -76,8 +81,8 @@ def ts_menu():
     while True:
         idx = pick_option("Tailscale:", [
             "Devices              — list all devices with status",
-            "Ping Device          — check latency to a peer",
             "Exit Nodes           — view and set exit node",
+            "Ping Device          — check latency to a peer",
             "───────────────",
             "★ Add to Favorites   — pin an action to the main menu",
             "← Back",
@@ -92,9 +97,9 @@ def ts_menu():
         elif idx == 0:
             _list_devices()
         elif idx == 1:
-            _ping_device()
-        elif idx == 2:
             _exit_nodes()
+        elif idx == 2:
+            _ping_device()
 
 
 def _list_devices():
@@ -185,6 +190,7 @@ def _device_detail(hostname):
         info(f"Pinging {hostname}...")
         result = _ts_cmd(f"ping --c 4 {hostname}")
         if result.returncode == 0:
+            log_action("Tailscale Ping", hostname)
             print(f"\n{result.stdout}")
         else:
             error("Ping failed.")
@@ -196,6 +202,7 @@ def _device_detail(hostname):
         if confirm(f"Route all traffic through {hostname}?"):
             r = _ts_cmd(f"set --exit-node={hostname}")
             if r.returncode == 0:
+                log_action("Tailscale Exit Node", hostname)
                 success(f"Exit node set to {hostname}")
             else:
                 error("Failed to set exit node.")
@@ -227,6 +234,7 @@ def _ping_device():
     info(f"Pinging {hostname}...")
     result = _ts_cmd(f"ping --c 4 {hostname}")
     if result.returncode == 0:
+        log_action("Tailscale Ping", hostname)
         print(f"\n{result.stdout}")
     else:
         error("Ping failed.")
@@ -269,6 +277,7 @@ def _exit_nodes():
         # Disable
         r = _ts_cmd("set --exit-node=")
         if r.returncode == 0:
+            log_action("Tailscale Exit Node Disabled", "")
             success("Exit node disabled.")
         else:
             error("Failed to disable exit node.")
@@ -276,6 +285,7 @@ def _exit_nodes():
         hostname = available[idx]
         r = _ts_cmd(f"set --exit-node={hostname}")
         if r.returncode == 0:
+            log_action("Tailscale Exit Node", hostname)
             success(f"Exit node set to {hostname}")
         else:
             error("Failed to set exit node.")
