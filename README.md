@@ -4,6 +4,8 @@
 
 Browse and transfer files over SSH, manage Docker containers across multiple servers, control VMs, monitor network clients, and interact with your smart home — all from one interactive CLI.
 
+![Homelab](homelab.png)
+
 ## Disclaimer
 
 This project was vibe coded with [Claude Code](https://claude.ai/code). Although I have extensively tested this tool within my homelab, please review the code before blindly executing code.
