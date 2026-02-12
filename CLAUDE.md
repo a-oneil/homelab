@@ -38,21 +38,32 @@ homelab/
 ├── main.py                  # Entry point, CLI args, main menu loop, plugin registry
 ├── config.py                # Config loading/saving, defaults, migration from stashrc
 ├── keychain.py              # Fernet encryption for sensitive config values
-├── sshkeys.py               # SSH key generation, viewing, deployment via ssh-copy-id
 ├── ui.py                    # Colors (class C), pick_option, pick_multi, confirm, prompt_text, bar_chart, sparkline, scrollable_list
-├── transport.py             # ssh_run, rsync_transfer, disk space check, list_remote_*
-├── files.py                 # File manager, browse, upload, download, search, trash, bookmarks
 ├── history.py               # Transfer history load/save/log
 ├── notifications.py         # Platform-aware desktop notifications + Discord webhook + clipboard
-├── dashboard.py             # Status Dashboard — unified overview of all plugin stats
-├── healthmonitor.py         # Health Monitor — alerts for unhealthy containers, low disk, high CPU
-├── healthmap.py             # Service Health Map — ASCII topology showing service up/down status
-├── watchfolder.py           # Watch Folders — monitor local dirs, auto-upload new files
-├── transferqueue.py         # Transfer Queue — background batched transfers
-├── quickconnect.py          # Quick Connect — unified SSH menu across all configured hosts
-├── containerupdates.py      # Container Updates — compare Docker images against registry
-├── auditlog.py              # Audit Log — timestamped action tracking, searchable history
 ├── themes.py                # Theme system — 10 preset palettes + custom hex color
+├── modules/
+│   ├── __init__.py
+│   ├── transport.py         # ssh_run, rsync_transfer, disk space check, list_remote_*
+│   ├── files.py             # File manager, browse, upload, download, search, trash, bookmarks
+│   ├── dashboard.py         # Status Dashboard — unified overview of all plugin stats
+│   ├── healthmonitor.py     # Health Monitor — alerts for unhealthy containers, low disk, high CPU
+│   ├── healthmap.py         # Service Health Map — ASCII topology showing service up/down status
+│   ├── watchfolder.py       # Watch Folders — monitor local dirs, auto-upload new files
+│   ├── transferqueue.py     # Transfer Queue — background batched transfers
+│   ├── quickconnect.py      # Quick Connect — unified SSH menu across all configured hosts
+│   ├── containerupdates.py  # Container Updates — compare Docker images against registry
+│   ├── auditlog.py          # Audit Log — timestamped action tracking, searchable history
+│   ├── sshkeys.py           # SSH key generation, viewing, deployment via ssh-copy-id
+│   ├── scheduler.py         # Scheduled Tasks — cron-like recurring actions
+│   ├── diskusage.py         # Disk usage analysis
+│   ├── firewall.py          # Firewall rule viewer
+│   ├── latency.py           # Network latency testing
+│   ├── mounts.py            # Mount point management
+│   ├── portmap.py           # Port mapping viewer
+│   ├── processes.py         # Process management
+│   ├── services.py          # Systemd service management
+│   └── volumes.py           # Volume management
 ├── plugins/
 │   ├── __init__.py          # Plugin base class + add_plugin_favorite, add_item_favorite helpers
 │   ├── unraid.py            # Dashboard, Docker (containers, compose, bulk ops, stats, resource graphs, images, system prune, update), VMs, parity check, notification center, user scripts, logs, SMART, VSCode
@@ -69,6 +80,7 @@ homelab/
 │   ├── npm.py               # Proxy hosts, redirections, SSL certs via token auth
 │   ├── tailscale.py         # Devices, ping, exit nodes via SSH CLI
 │   ├── forgejo.py           # Repos, CI runners, issues via Gitea-compatible API
+│   ├── github.py            # Repos, Actions runners, issues, PRs via GitHub REST API
 │   ├── immich.py            # Library stats, jobs, uploads, albums via REST API
 │   ├── syncthing.py         # Folders, devices, conflicts, system status via REST API
 │   ├── arr.py               # Shared base for Sonarr/Radarr/Lidarr (Arr API)
@@ -76,9 +88,7 @@ homelab/
 │   ├── radarr.py            # Movie management via Arr API
 │   ├── lidarr.py            # Music management via Arr API
 │   ├── speedtest.py         # Local speed test with history and trends
-│   ├── vaultwarden.py       # Admin dashboard, user management, org stats via admin API
 │   └── ansible.py           # Playbook runner, inventory viewer via SSH
-├── scheduler.py             # Scheduled Tasks — cron-like recurring actions
 setup.py
 ```
 
@@ -101,6 +111,10 @@ Plugins are registered in `main.py` in the `PLUGINS` list (22 plugins total). Ad
 
 ### Core Modules
 
+All core modules live under `homelab/modules/`:
+
+- **transport.py** — `ssh_run(cmd, capture=True, host=None, port=None)` runs SSH command, returns CompletedProcess. `rsync_transfer()` handles file transfers. **Requires explicit host.**
+- **files.py** — File manager with browse, upload, download, search, trash, bookmarks. Requires `host`, `base_path`, optional `extra_paths`, `trash_path`.
 - **dashboard.py** — `status_dashboard(plugins)` shows all configured plugins' widgets in one view
 - **healthmonitor.py** — `get_health_alerts(plugins)` returns alert strings shown in main menu header; checks unhealthy containers, low disk, high CPU via single SSH call
 - **healthmap.py** — `health_map(plugins)` ASCII topology of all services with colored UP/DOWN/N/A indicators, grouped by layer (Infrastructure, Network, Services, Media). Accessed via Uptime Kuma menu
@@ -109,15 +123,22 @@ Plugins are registered in `main.py` in the `PLUGINS` list (22 plugins total). Ad
 - **quickconnect.py** — Unified SSH menu gathering hosts from all configured plugins + custom hosts stored in `ssh_hosts` config
 - **containerupdates.py** — `check_all_container_updates()` auto-discovers all Docker hosts (Unraid + docker_servers), lets user pick which to check. `_check_host(host, port)` does the actual SSH comparison of running vs registry digests.
 - **auditlog.py** — `log_action(action, detail)` appends to `~/.homelab_audit.json` (max 500 entries). View recent, search, clear
-- **themes.py** — 10 preset themes (default, dracula, nord, catppuccin, gruvbox, tokyo night, solarized, rose pine, monokai, ocean) + custom hex color. Drives `C.ACCENT` and questionary `Style`
 - **sshkeys.py** — SSH key generation (ed25519, RSA 4096), view fingerprints, deploy to servers via ssh-copy-id
 - **scheduler.py** — Cron-like scheduler for recurring tasks (speedtest, container updates, health check, config backup). Background daemon thread checks every 60s.
+- **diskusage.py** — Disk usage analysis for remote servers
+- **firewall.py** — Firewall rule viewer (iptables/nftables)
+- **latency.py** — Network latency testing between hosts
+- **mounts.py** — Mount point listing and management
+- **portmap.py** — Port mapping and listening service viewer
+- **processes.py** — Remote process listing and management
+- **services.py** — Systemd service management (status, start, stop, restart, enable, disable)
+- **volumes.py** — Docker volume management
 
 ### Key Patterns
 
 - `pick_option(prompt, options, header="")` — core menu, clears screen, returns index. Last option = back.
 - `pick_multi(prompt, options, header="")` — checkbox multi-select, returns list of indices
-- `ssh_run(cmd, capture=True, host=None, port=None)` — runs SSH command, returns CompletedProcess. **Requires explicit host.**
+- `ssh_run(cmd, capture=True, host=None, port=None)` — in `modules/transport.py`. Runs SSH command, returns CompletedProcess. **Requires explicit host.**
 - TTY commands (nano, shell, logs): use `subprocess.run(["ssh", "-t", host, cmd])`
 - Plugin SSH helper: Define `_ssh(command, **kwargs)` in each plugin that wraps `ssh_run(command, host=get_host(), **kwargs)`
 - dockerhost.py SSH helpers: `_ssh_cmd(server, command)` and `_ssh_tty(server, command)` — pass server dict, extract host/port internally
@@ -136,9 +157,8 @@ Plugins are registered in `main.py` in the `PLUGINS` list (22 plugins total). Ad
 - API plugins use `urllib.request` with authenticated HTTP calls, each with internal `_api()` helper
 - Background features (watch folder, transfer queue, header refresh) use daemon threads with `threading.Event` for stop signals
 - Docker format strings in SSH commands need `{{{{}}}}` quadruple braces in Python f-strings
-- File functions require: `host`, `base_path`, optional `extra_paths`, `trash_path`
 - `manage_bookmarks()` and `show_history()` are local-only, no host needed
-- Core modules (files.py, transport.py, healthmonitor.py, containerupdates.py, watchfolder.py, transferqueue.py) are **generic** — they take `host`, `base_path`, etc. as parameters. Plugins pass their specific config values when calling them.
+- Core modules are **generic** — they take `host`, `base_path`, etc. as parameters. Plugins pass their specific config values when calling them.
 
 ### Docker Feature Parity
 

@@ -4,7 +4,7 @@ import glob
 import os
 import subprocess
 
-from homelab.auditlog import log_action
+from homelab.modules.auditlog import log_action
 from homelab.config import CFG
 from homelab.ui import (
     C, pick_option, confirm, prompt_text, scrollable_list,

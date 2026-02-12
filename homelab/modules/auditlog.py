@@ -56,7 +56,7 @@ def audit_log_menu():
         elif idx == 1:
             _search_log()
         elif idx == 2:
-            from homelab.files import show_history
+            from homelab.modules.files import show_history
             show_history()
         elif idx == 3:
             _clear_log()

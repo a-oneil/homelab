@@ -11,7 +11,7 @@ from homelab.config import CFG
 from homelab.plugins import Plugin
 from homelab.ui import (C, pick_option, pick_multi, bar_chart, sparkline,
                         success, error, warn, info, confirm, prompt_text)
-from homelab.auditlog import log_action
+from homelab.modules.auditlog import log_action
 
 _HEADER_CACHE = {"timestamp": 0, "stats": "", "alerts": []}
 _CACHE_TTL = 300
@@ -271,7 +271,7 @@ def _refresh_cache():
         if down_count > 0:
             _HEADER_CACHE["stats"] = (
                 f"Kuma: {up_count}/{len(active)} up "
-                f"({C.RED}{down_count} down{C.RESET}){avg_str}"
+                f"({C.RED}{down_count} down{C.RESET}{C.DIM}){avg_str}"
             )
             down_names = [m.get("name", f"#{m.get('id', '?')}") for m in down_monitors]
             names = ", ".join(down_names[:3])
@@ -292,7 +292,7 @@ def _refresh_cache():
 # ---------------------------------------------------------------------------
 
 def _launch_health_map():
-    from homelab.healthmap import health_map
+    from homelab.modules.healthmap import health_map
     from homelab.main import PLUGINS
     health_map(PLUGINS)
 

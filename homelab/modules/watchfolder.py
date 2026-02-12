@@ -4,9 +4,9 @@ import os
 import time
 import threading
 
-from homelab.auditlog import log_action
+from homelab.modules.auditlog import log_action
 from homelab.config import CFG, save_config
-from homelab.transport import rsync_transfer
+from homelab.modules.transport import rsync_transfer
 from homelab.ui import (
     C, pick_option, prompt_text, info, success, error, warn,
 )

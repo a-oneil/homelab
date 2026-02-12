@@ -3,10 +3,10 @@
 import subprocess
 import time
 
-from homelab.auditlog import log_action
+from homelab.modules.auditlog import log_action
 from homelab.config import CFG
 from homelab.plugins import Plugin
-from homelab.transport import ssh_run
+from homelab.modules.transport import ssh_run
 from homelab.ui import (
     C, pick_option, confirm, prompt_text, scrollable_list,
     info, warn,

@@ -1,10 +1,12 @@
-DISCLAIMER: This project was vibe coded with Claude Code. Although I have extensively tested this tool, please check out the repository before blindly executing code.
-
 # Homelab
 
 **Self-Hosted Infrastructure Manager** — a terminal UI for managing your homelab services.
 
 Browse and transfer files over SSH, manage Docker containers across multiple servers, control VMs, monitor network clients, and interact with your smart home — all from one interactive CLI.
+
+## Disclaimer
+
+This project was vibe coded with [Claude Code](https://claude.ai/code). Although I have extensively tested this tool within my homelab, please review the code before blindly executing code.
 
 ## Features
 
@@ -20,7 +22,7 @@ Browse and transfer files over SSH, manage Docker containers across multiple ser
 - **Bookmarks** — save and jump to frequently used folders
 - **Trash** — soft-delete with restore (sidecar `.origin` files track original paths)
 
-### Service Plugins (20)
+### Service Plugins (22)
 - **Unraid** — dashboard (disk usage, CPU, RAM, SMART), Docker management (containers, compose, bulk operations, stats, resource graphs, image management, system prune, per-container update), VMs (virsh start/stop/restart/snapshot), parity check, notification center, user scripts, live logs (syslog + container + multi-container)
 - **Docker Servers** — manage any Linux server with Docker over SSH. Per-server: containers (start/stop/restart/shell/logs/inspect/update), compose (up/down/pull & up/edit/validate/restart service), bulk operations, docker stats, resource graphs, image management, system prune, container update checks, file browser, system stats, live logs (including multi-container + search)
 - **Proxmox** — QEMU VMs and LXC containers (start, stop, reboot, snapshot), resource usage with bar charts, console access (SSH/noVNC)
@@ -31,6 +33,7 @@ Browse and transfer files over SSH, manage Docker containers across multiple ser
 - **Nginx Proxy Manager** — list/add/edit proxy hosts, redirections, SSL certificates
 - **Tailscale** — list devices, ping, manage exit nodes (via SSH to server)
 - **Forgejo** — repositories, CI runners, issues (Gitea-compatible API)
+- **GitHub** — repositories, Actions runners, issues, pull requests via GitHub REST API
 - **Immich** — library stats, server info, job management, recent uploads, albums
 - **Syncthing** — folder sync status, connected devices, conflicts, system status
 - **Sonarr** — TV series, calendar, queue, wanted episodes, search & add
@@ -41,6 +44,7 @@ Browse and transfer files over SSH, manage Docker containers across multiple ser
 - **SABnzbd** — send NZBs and URLs
 - **Deluge** — send torrents and magnet links
 - **Speedtest** — local speed test with history tracking and trend charts
+- **Ansible** — playbook runner, inventory viewer via SSH
 
 ### Tools
 - **Status Dashboard** — unified overview pulling widgets from all configured plugins
@@ -98,7 +102,7 @@ homelab
 
 On first run, Homelab creates `~/.homelabrc` with default settings. Go to **Settings** to configure:
 
-1. **SSH Host** — your server's SSH address (e.g. `root@10.20.0.2`)
+1. **SSH Host** — your server's SSH address (e.g. `root@10.0.0.5`)
 2. **Remote Base** — the base path for file browsing (e.g. `/mnt/user`)
 3. **Service credentials** — configure any services you want to use
 
@@ -109,9 +113,6 @@ ssh-copy-id root@your-server-ip
 ```
 
 Or use the built-in **SSH Key Manager** (Settings > SSH Keys) to generate and deploy keys.
-
-### Migrating from Stash
-If you previously used Stash, Homelab automatically copies `~/.stashrc` to `~/.homelabrc` on first run. No manual migration needed.
 
 ## Plugin Configuration
 
@@ -163,6 +164,9 @@ Each server gets its own full Docker management suite: containers, compose, imag
 - **URL**: `https://your-forgejo-instance`
 - **Token**: Create in Forgejo > Settings > Applications > Access Tokens
 
+### GitHub
+- **Token**: Create a Personal Access Token at GitHub > Settings > Developer Settings > Tokens
+
 ### Immich
 - **URL**: `http://your-immich-ip:2283`
 - **API Key**: Create in Immich > Account Settings > API Keys
@@ -182,6 +186,11 @@ Each server gets its own full Docker management suite: containers, compose, imag
 ### Download Clients
 - **SABnzbd**: URL + API Key
 - **Deluge**: URL + Web UI Password
+
+### Ansible
+- **SSH Host**: Server with Ansible installed
+- **Playbook Path**: Directory containing your playbooks
+- **Inventory Path**: Path to your Ansible inventory file
 
 ## CLI Flags
 
@@ -209,21 +218,31 @@ homelab/
 ├── main.py               # Entry point, CLI args, main menu loop, plugin registry
 ├── config.py             # Config loading/saving, defaults, migration
 ├── keychain.py           # Fernet encryption for sensitive config values
-├── sshkeys.py            # SSH key generation, viewing, deployment
 ├── ui.py                 # Colors, pick_option, pick_multi, bar_chart, sparkline, scrollable_list
-├── transport.py          # ssh_run, rsync_transfer, disk space check
-├── files.py              # File manager, browse, upload, download, search, trash, bookmarks
 ├── history.py            # Transfer history
 ├── notifications.py      # Desktop + Discord webhook notifications
-├── dashboard.py          # Status Dashboard
-├── healthmonitor.py      # Health Monitor alerts
-├── healthmap.py          # Service Health Map (ASCII topology)
-├── watchfolder.py        # Watch Folders (auto-upload)
-├── transferqueue.py      # Transfer Queue (background batched transfers)
-├── quickconnect.py       # Quick Connect (unified SSH menu)
-├── containerupdates.py   # Container Updates (image digest comparison)
-├── auditlog.py           # Audit Log
 ├── themes.py             # Theme system (10 presets + custom)
+├── modules/
+│   ├── transport.py      # ssh_run, rsync_transfer, disk space check
+│   ├── files.py          # File manager, browse, upload, download, search, trash, bookmarks
+│   ├── dashboard.py      # Status Dashboard
+│   ├── healthmonitor.py  # Health Monitor alerts
+│   ├── healthmap.py      # Service Health Map (ASCII topology)
+│   ├── watchfolder.py    # Watch Folders (auto-upload)
+│   ├── transferqueue.py  # Transfer Queue (background batched transfers)
+│   ├── quickconnect.py   # Quick Connect (unified SSH menu)
+│   ├── containerupdates.py # Container Updates (image digest comparison)
+│   ├── auditlog.py       # Audit Log
+│   ├── sshkeys.py        # SSH key generation, viewing, deployment
+│   ├── scheduler.py      # Scheduled Tasks (cron-like recurring actions)
+│   ├── diskusage.py      # Disk usage analysis
+│   ├── firewall.py       # Firewall rule viewer
+│   ├── latency.py        # Network latency testing
+│   ├── mounts.py         # Mount point management
+│   ├── portmap.py        # Port mapping viewer
+│   ├── processes.py      # Process management
+│   ├── services.py       # Systemd service management
+│   └── volumes.py        # Volume management
 └── plugins/
     ├── __init__.py       # Plugin base class
     ├── unraid.py         # Unraid (dashboard, Docker, VMs, parity, scripts, logs)
@@ -236,6 +255,7 @@ homelab/
     ├── npm.py            # Nginx Proxy Manager
     ├── tailscale.py      # Tailscale (devices, exit nodes)
     ├── forgejo.py        # Forgejo (repos, CI, issues)
+    ├── github.py         # GitHub (repos, Actions, issues, PRs)
     ├── immich.py         # Immich (photos, albums)
     ├── syncthing.py      # Syncthing (folders, devices)
     ├── arr.py            # Shared Arr base class
@@ -246,7 +266,8 @@ homelab/
     ├── jellyfin.py       # Jellyfin
     ├── sabnzbd.py        # SABnzbd
     ├── deluge.py         # Deluge
-    └── speedtest.py      # Speedtest
+    ├── speedtest.py      # Speedtest
+    └── ansible.py        # Ansible
 ```
 
 ## Adding a Plugin
@@ -271,3 +292,7 @@ The plugin's config fields auto-appear in Settings, and menu items auto-appear w
 | `~/.homelab.key` | Fernet encryption key for sensitive config values |
 | `~/.homelab_history.json` | Transfer history (last 100 entries) |
 | `~/.homelab_audit.json` | Audit log (last 500 entries) |
+
+## License
+
+This project is licensed under the MIT License — see [LICENSE](LICENSE) for details.

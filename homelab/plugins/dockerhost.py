@@ -5,10 +5,10 @@ import subprocess
 import time
 
 from homelab.config import CFG, save_config
-from homelab.auditlog import log_action
+from homelab.modules.auditlog import log_action
 from homelab.plugins import Plugin
-from homelab.transport import ssh_run
-from homelab.files import (
+from homelab.modules.transport import ssh_run
+from homelab.modules.files import (
     manage_files, upload_local, download_from_server, fetch_and_transfer,
 )
 from homelab.ui import (
@@ -28,10 +28,7 @@ class DockerHostPlugin(Plugin):
         return []
 
     def get_header_stats(self):
-        servers = CFG.get("docker_servers", [])
-        if not servers:
-            return None
-        return f"Servers: {len(servers)} configured"
+        return None
 
     def get_menu_items(self):
         items = []
@@ -51,6 +48,50 @@ class DockerHostPlugin(Plugin):
             actions[f"Server: {name}"] = (
                 f"docker_server_{name}",
                 lambda s=server: _server_menu(s),
+            )
+            actions[f"{name}: System Tools"] = (
+                f"docker_systools_{name}",
+                lambda s=server: _server_system_tools(s),
+            )
+            actions[f"{name}: System Stats"] = (
+                f"docker_sysstats_{name}",
+                lambda s=server: _server_system_stats(s),
+            )
+            actions[f"{name}: Containers"] = (
+                f"docker_containers_{name}",
+                lambda s=server: _server_containers_hub(s),
+            )
+            actions[f"{name}: SSH Shell"] = (
+                f"docker_ssh_{name}",
+                lambda s=server: _server_ssh_shell(s),
+            )
+            actions[f"{name}: Port Map"] = (
+                f"docker_portmap_{name}",
+                lambda s=server: _run_tool(s, "portmap"),
+            )
+            actions[f"{name}: Systemd Services"] = (
+                f"docker_services_{name}",
+                lambda s=server: _run_tool(s, "services"),
+            )
+            actions[f"{name}: Process Explorer"] = (
+                f"docker_processes_{name}",
+                lambda s=server: _run_tool(s, "processes"),
+            )
+            actions[f"{name}: Firewall Rules"] = (
+                f"docker_firewall_{name}",
+                lambda s=server: _run_tool(s, "firewall"),
+            )
+            actions[f"{name}: Mount Monitor"] = (
+                f"docker_mounts_{name}",
+                lambda s=server: _run_tool(s, "mounts"),
+            )
+            actions[f"{name}: Crontab"] = (
+                f"docker_crontab_{name}",
+                lambda s=server: _server_crontab(s),
+            )
+            actions[f"{name}: Docker Volumes"] = (
+                f"docker_volumes_{name}",
+                lambda s=server: _run_tool(s, "volumes"),
             )
         return actions
 
@@ -183,12 +224,15 @@ def _server_menu(server):
             "Container Updates — check for image updates",
             "───────────────",
             "System Stats      — CPU, RAM, uptime, disk usage",
+            "System Tools      — ports, services, processes, firewall, mounts",
             "SSH Shell         — open terminal on this server",
+            "───────────────",
+            "★ Add to Favorites — pin an action to the main menu",
             "← Back",
         ])
-        if idx == 7:
+        if idx == 10:
             return
-        elif idx == 4:
+        elif idx in (4, 8):
             continue
         elif idx == 0:
             _server_files_menu(server)
@@ -197,12 +241,17 @@ def _server_menu(server):
         elif idx == 2:
             _server_docker_resources(server)
         elif idx == 3:
-            from homelab.containerupdates import check_container_updates
+            from homelab.modules.containerupdates import check_container_updates
             check_container_updates(host=_ssh_host_arg(server))
         elif idx == 5:
             _server_system_stats(server)
         elif idx == 6:
+            _server_system_tools(server)
+        elif idx == 7:
             _server_ssh_shell(server)
+        elif idx == 9:
+            from homelab.plugins import add_plugin_favorite
+            add_plugin_favorite(DockerHostPlugin())
 
 
 def _server_containers_hub(server):
@@ -297,7 +346,8 @@ def _server_docker_resources(server):
         elif idx == 1:
             _server_docker_networks(server)
         elif idx == 2:
-            _server_docker_volumes(server)
+            from homelab.modules.volumes import docker_volumes
+            docker_volumes(host=_ssh_host_arg(server), port=server.get("port", "") or None, label=server.get("name", "?"))
         elif idx == 3:
             _server_system_prune(server)
 
@@ -1676,6 +1726,150 @@ def _server_multi_container_log(server, containers):
 
 
 # ─── SSH Shell ────────────────────────────────────────────────────────────
+
+def _run_tool(server, tool):
+    """Run an individual system tool for a server."""
+    host = _ssh_host_arg(server)
+    port = server.get("port", "") or None
+    name = server.get("name", "?")
+    if tool == "portmap":
+        from homelab.modules.portmap import show_port_map
+        show_port_map(host=host, port=port)
+    elif tool == "services":
+        from homelab.modules.services import show_services
+        show_services(host=host, port=port)
+    elif tool == "processes":
+        from homelab.modules.processes import show_processes
+        show_processes(host=host, port=port)
+    elif tool == "firewall":
+        from homelab.modules.firewall import show_firewall_rules
+        show_firewall_rules(host=host, port=port)
+    elif tool == "mounts":
+        from homelab.modules.mounts import show_mounts
+        show_mounts(host=host, port=port)
+    elif tool == "volumes":
+        from homelab.modules.volumes import docker_volumes
+        docker_volumes(host=host, port=port, label=name)
+
+
+def _server_system_tools(server):
+    """System tools submenu for a Docker server."""
+    host = _ssh_host_arg(server)
+    port = server.get("port", "") or None
+    name = server.get("name", "?")
+    while True:
+        idx = pick_option(f"{name} — System Tools:", [
+            "Port Map          — listening ports and processes",
+            "Systemd Services  — manage systemd units",
+            "Process Explorer  — view and kill processes",
+            "Firewall Rules    — iptables/nftables viewer",
+            "Mount Monitor     — filesystem usage",
+            "Crontab           — scheduled cron jobs",
+            "Docker Volumes    — volume usage and cleanup",
+            "───────────────",
+            "★ Add to Favorites — pin a tool to the main menu",
+            "← Back",
+        ])
+        if idx == 9:
+            return
+        elif idx in (7,):
+            continue
+        elif idx == 0:
+            from homelab.modules.portmap import show_port_map
+            show_port_map(host=host, port=port)
+        elif idx == 1:
+            from homelab.modules.services import show_services
+            show_services(host=host, port=port)
+        elif idx == 2:
+            from homelab.modules.processes import show_processes
+            show_processes(host=host, port=port)
+        elif idx == 3:
+            from homelab.modules.firewall import show_firewall_rules
+            show_firewall_rules(host=host, port=port)
+        elif idx == 4:
+            from homelab.modules.mounts import show_mounts
+            show_mounts(host=host, port=port)
+        elif idx == 5:
+            _server_crontab(server)
+        elif idx == 6:
+            from homelab.modules.volumes import docker_volumes
+            docker_volumes(host=host, port=port, label=name)
+        elif idx == 8:
+            from homelab.plugins import add_plugin_favorite
+            add_plugin_favorite(DockerHostPlugin())
+
+
+def _server_crontab(server):
+    """View and edit crontab and cron directories."""
+    while True:
+        cmd = (
+            "echo '=== User Crontab ===';"
+            "crontab -l 2>/dev/null || echo '(no user crontab)';"
+            "echo '';"
+            "echo '=== /etc/cron.d/ ===';"
+            "ls -la /etc/cron.d/ 2>/dev/null || echo '(not found)';"
+            "echo '';"
+            "echo '=== /etc/cron.daily/ ===';"
+            "ls -la /etc/cron.daily/ 2>/dev/null || echo '(not found)';"
+            "echo '';"
+            "echo '=== /etc/cron.hourly/ ===';"
+            "ls -la /etc/cron.hourly/ 2>/dev/null || echo '(not found)';"
+            "echo '';"
+            "echo '=== /etc/cron.weekly/ ===';"
+            "ls -la /etc/cron.weekly/ 2>/dev/null || echo '(not found)';"
+            "echo '';"
+            "echo '=== /etc/cron.monthly/ ===';"
+            "ls -la /etc/cron.monthly/ 2>/dev/null || echo '(not found)'"
+        )
+        result = _ssh_cmd(server, cmd)
+        if result.returncode != 0:
+            error("Failed to retrieve crontab information.")
+            input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
+            return
+
+        lines = [f"  {line}" for line in result.stdout.strip().split("\n")]
+        print()
+        for line in lines:
+            print(line)
+        print()
+
+        idx = pick_option(f"Crontab: {server.get('name', '?')}", [
+            "Edit crontab       — open crontab -e in remote editor",
+            "Edit cron file     — edit a file in /etc/cron.d/",
+            "← Back",
+        ])
+        if idx == 2:
+            return
+        elif idx == 0:
+            log_action("Edit Crontab", server.get("name", "?"))
+            _ssh_tty(server, "crontab -e")
+        elif idx == 1:
+            _edit_cron_file(server)
+
+
+def _edit_cron_file(server):
+    """Pick a file from /etc/cron.d/ to edit."""
+    result = _ssh_cmd(server, "ls /etc/cron.d/ 2>/dev/null")
+    if result.returncode != 0 or not result.stdout.strip():
+        warn("No files found in /etc/cron.d/")
+        input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
+        return
+
+    files = [f.strip() for f in result.stdout.strip().split("\n") if f.strip()]
+    if not files:
+        warn("No files found in /etc/cron.d/")
+        input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
+        return
+
+    choices = list(files)
+    choices.append("← Back")
+    idx = pick_option("Edit cron file:", choices)
+    if idx >= len(files):
+        return
+
+    log_action("Edit Cron File", f"/etc/cron.d/{files[idx]} on {server.get('name', '?')}")
+    _ssh_tty(server, f"nano /etc/cron.d/{files[idx]}")
+
 
 def _server_ssh_shell(server):
     host = _ssh_host_arg(server)

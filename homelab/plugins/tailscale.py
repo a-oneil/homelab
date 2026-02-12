@@ -4,7 +4,7 @@ import json
 import time
 
 from homelab.config import CFG
-from homelab.auditlog import log_action
+from homelab.modules.auditlog import log_action
 from homelab.plugins import Plugin
 from homelab.ui import C, pick_option, confirm, info, success, error
 
@@ -18,7 +18,7 @@ def _get_host():
 
 def _ts_cmd(args, capture=True):
     """Run a tailscale CLI command via SSH."""
-    from homelab.transport import ssh_run
+    from homelab.modules.transport import ssh_run
     return ssh_run(f"tailscale {args}", host=_get_host())
 
 

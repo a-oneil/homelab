@@ -5,7 +5,7 @@ import time
 from datetime import datetime
 
 from homelab.config import CFG, save_config
-from homelab.auditlog import log_action
+from homelab.modules.auditlog import log_action
 from homelab.ui import C, pick_option, confirm, success, info
 
 
@@ -51,11 +51,11 @@ def _run_task(task):
             from homelab.plugins.speedtest import _run_speed_test
             _run_speed_test(silent=True)
         elif task_type == "container_updates":
-            from homelab.containerupdates import _get_docker_hosts, _check_host
+            from homelab.modules.containerupdates import _get_docker_hosts, _check_host
             for h in _get_docker_hosts():
                 _check_host(h["host"], h.get("port"))
         elif task_type == "health_check":
-            from homelab.healthmonitor import get_health_alerts
+            from homelab.modules.healthmonitor import get_health_alerts
             get_health_alerts([])
         elif task_type == "backup_config":
             import json

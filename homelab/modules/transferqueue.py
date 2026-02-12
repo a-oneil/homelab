@@ -2,8 +2,8 @@
 
 import os
 import threading
-from homelab.auditlog import log_action
-from homelab.transport import rsync_transfer
+from homelab.modules.auditlog import log_action
+from homelab.modules.transport import rsync_transfer
 from homelab.ui import C, pick_option, prompt_text, success, error, warn
 
 
@@ -27,7 +27,7 @@ def transfers_menu():
         elif idx == 0:
             transfer_queue_menu()
         elif idx == 1:
-            from homelab.watchfolder import watch_folder_menu
+            from homelab.modules.watchfolder import watch_folder_menu
             watch_folder_menu()
 
 

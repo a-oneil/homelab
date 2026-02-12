@@ -4,7 +4,7 @@ import subprocess
 import sys
 import time
 
-from homelab.auditlog import log_action
+from homelab.modules.auditlog import log_action
 from homelab.config import CFG, save_config
 from homelab.plugins import Plugin
 from homelab.ui import C, pick_option, info, error, warn, bar_chart, sparkline

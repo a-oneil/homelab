@@ -6,10 +6,10 @@ import subprocess
 import time
 import urllib.request
 
-from homelab.auditlog import log_action
+from homelab.modules.auditlog import log_action
 from homelab.config import CFG
 from homelab.plugins import Plugin
-from homelab.transport import ssh_run
+from homelab.modules.transport import ssh_run
 from homelab.ui import (
     C, pick_option, pick_multi, confirm, prompt_text, scrollable_list,
     info, success, error, warn, bar_chart, sparkline, check_tool,
@@ -83,7 +83,7 @@ class UnraidPlugin(Plugin):
 
     def get_config_fields(self):
         return [
-            ("unraid_ssh_host", "Unraid SSH Host", "e.g. root@10.20.0.2", False),
+            ("unraid_ssh_host", "Unraid SSH Host", "e.g. root@10.0.0.5", False),
             ("unraid_remote_base", "Unraid Remote Base Path", "e.g. /mnt/user", False),
             ("unraid_trash_path", "Unraid Trash Path", "", False),
             ("unraid_vscode_workspace", "Unraid VSCode Workspace", "", False),
@@ -107,7 +107,7 @@ class UnraidPlugin(Plugin):
         ]
 
     def get_actions(self):
-        from homelab.files import (
+        from homelab.modules.files import (
             manage_files, fetch_and_transfer, download_from_server,
             upload_local, manage_trash, mount_browser,
         )
@@ -150,6 +150,14 @@ class UnraidPlugin(Plugin):
             )),
             "Unraid Parity Check": ("unraid_parity", _parity_check),
             "Unraid Notifications": ("unraid_notifications", _notification_center),
+            "Unraid Server Tools": ("unraid_server_tools", _server_tools_menu),
+            "Unraid SSH Shell": ("unraid_ssh", _ssh_shell),
+            "Unraid Port Map": ("unraid_portmap", lambda: _run_tool("portmap")),
+            "Unraid Systemd Services": ("unraid_services", lambda: _run_tool("services")),
+            "Unraid Process Explorer": ("unraid_processes", lambda: _run_tool("processes")),
+            "Unraid Firewall Rules": ("unraid_firewall", lambda: _run_tool("firewall")),
+            "Unraid Mount Monitor": ("unraid_mounts", lambda: _run_tool("mounts")),
+            "Unraid Docker Volumes": ("unraid_volumes", lambda: _run_tool("volumes")),
         }
 
     def resolve_favorite(self, fav):
@@ -229,7 +237,7 @@ def unraid_menu():
 def _files_menu():
     """Submenu for all file-related operations."""
     from homelab.config import local_hostname
-    from homelab.files import (
+    from homelab.modules.files import (
         manage_files, download_from_server,
         manage_trash, mount_browser,
     )
@@ -263,18 +271,52 @@ def _files_menu():
             mount_browser(host=get_host(), base_path=get_base())
 
 
+def _run_tool(tool):
+    """Run an individual system tool for the Unraid server."""
+    host = get_host()
+    if tool == "portmap":
+        from homelab.modules.portmap import show_port_map
+        show_port_map(host=host)
+    elif tool == "services":
+        from homelab.modules.services import show_services
+        show_services(host=host)
+    elif tool == "processes":
+        from homelab.modules.processes import show_processes
+        show_processes(host=host)
+    elif tool == "firewall":
+        from homelab.modules.firewall import show_firewall_rules
+        show_firewall_rules(host=host)
+    elif tool == "mounts":
+        from homelab.modules.mounts import show_mounts
+        show_mounts(host=host)
+    elif tool == "volumes":
+        from homelab.modules.volumes import docker_volumes
+        docker_volumes(host=host, label="Unraid")
+
+
 def _server_tools_menu():
     """Submenu for SSH shell, live logs, VSCode, and user scripts."""
     while True:
         idx = pick_option("Server Tools:", [
-            "SSH Shell      — open a terminal session on the server",
-            "Live Logs      — tail syslog or container logs",
-            "User Scripts   — browse and run server scripts",
-            "Open in VSCode — launch remote workspace",
+            "SSH Shell         — open a terminal session on the server",
+            "Live Logs         — tail syslog or container logs",
+            "User Scripts      — browse and run server scripts",
+            "Open in VSCode    — launch remote workspace",
+            "───────────────",
+            "Port Map          — listening ports and processes",
+            "Systemd Services  — manage systemd units",
+            "Process Explorer  — view and kill processes",
+            "Firewall Rules    — iptables/nftables viewer",
+            "Mount Monitor     — filesystem usage",
+            "Docker Volumes    — volume usage and cleanup",
+            "───────────────",
+            "★ Add to Favorites — pin a tool to the main menu",
             "← Back",
         ])
-        if idx == 4:
+        if idx == 13:
             return
+        elif idx in (4, 11):
+            continue
         elif idx == 0:
             _ssh_shell()
         elif idx == 1:
@@ -283,11 +325,26 @@ def _server_tools_menu():
             user_scripts()
         elif idx == 3:
             open_vscode()
+        elif idx == 5:
+            _run_tool("portmap")
+        elif idx == 6:
+            _run_tool("services")
+        elif idx == 7:
+            _run_tool("processes")
+        elif idx == 8:
+            _run_tool("firewall")
+        elif idx == 9:
+            _run_tool("mounts")
+        elif idx == 10:
+            _run_tool("volumes")
+        elif idx == 12:
+            from homelab.plugins import add_plugin_favorite
+            add_plugin_favorite(UnraidPlugin())
 
 
 def _transfer_to_server_menu():
     """Sub-menu for transferring files to the server."""
-    from homelab.files import fetch_and_transfer, upload_local
+    from homelab.modules.files import fetch_and_transfer, upload_local
     idx = pick_option("Transfer to Server:", [
         "Upload local files   — send files from this machine",
         "Download from web    — wget, curl, yt-dlp, git clone",
@@ -667,7 +724,8 @@ def _docker_resources_menu():
         elif idx == 1:
             _docker_networks()
         elif idx == 2:
-            _docker_volumes()
+            from homelab.modules.volumes import docker_volumes
+            docker_volumes(host=get_host(), label="Unraid")
         elif idx == 3:
             _docker_system_prune()
 
@@ -1321,7 +1379,7 @@ def _container_actions(name):
         appdata_path = f"/mnt/user/appdata/{name}"
         check = _ssh(f"test -d '{appdata_path}' && echo 'exists'")
         if check.returncode == 0 and "exists" in check.stdout:
-            from homelab.files import manage_files_at
+            from homelab.modules.files import manage_files_at
             manage_files_at(appdata_path, host=get_host(), base_path=get_base())
         else:
             warn(f"Appdata folder not found: {appdata_path}")

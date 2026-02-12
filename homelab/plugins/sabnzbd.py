@@ -7,7 +7,7 @@ import time
 import urllib.parse
 import urllib.request
 
-from homelab.auditlog import log_action
+from homelab.modules.auditlog import log_action
 from homelab.config import CFG
 from homelab.plugins import Plugin
 from homelab.ui import C, pick_option, confirm, prompt_text, info, success, error
@@ -529,7 +529,7 @@ def _add_url():
 
 def _upload_file():
     """Upload a local .nzb file to SABnzbd."""
-    from homelab.files import browse_local
+    from homelab.modules.files import browse_local
 
     url = CFG.get("sabnzbd_url", "").rstrip("/")
     key = CFG.get("sabnzbd_api_key", "")

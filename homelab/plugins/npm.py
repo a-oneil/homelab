@@ -7,7 +7,7 @@ import time
 import urllib.request
 
 from homelab.config import CFG
-from homelab.auditlog import log_action
+from homelab.modules.auditlog import log_action
 from homelab.plugins import Plugin
 from homelab.ui import C, pick_option, pick_multi, confirm, prompt_text, success, error, warn, info
 

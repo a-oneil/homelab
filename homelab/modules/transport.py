@@ -218,7 +218,15 @@ def _render_transfer_progress(file_name, file_pct, speed,
     # Line 1: overall progress bar
     bar_w = 30
     if total > 0:
-        pct = checked / total
+        # Interpolate current file progress for smoother bar movement
+        file_frac = 0
+        try:
+            if file_pct:
+                file_frac = int(file_pct) / 100
+        except (ValueError, TypeError):
+            pass
+        effective = checked + file_frac
+        pct = min(effective / total, 1.0)
         filled = int(bar_w * pct)
         bar = f"{C.ACCENT}{'█' * filled}{C.DIM}{'░' * (bar_w - filled)}{C.RESET}"
         remaining = total - checked
@@ -297,11 +305,17 @@ def _display_rsync_progress(proc, output_lines):
             file_pct = m.group(2)
             speed = m.group(3)
             if m.group(5):
-                xferred = int(m.group(5))
-                remaining = int(m.group(6))
-                total = int(m.group(7))
-                # Only move forward — rsync's to-check can briefly fluctuate
-                checked = max(checked, total - remaining)
+                new_xferred = int(m.group(5))
+                remaining_rsync = int(m.group(6))
+                new_total = int(m.group(7))
+                total = max(total, new_total)
+                from_tocheck = new_total - remaining_rsync
+                # Advance checked by at least 1 per transferred file
+                # (handles incremental recursion where total grows and
+                # to-check progress appears stuck)
+                xfer_delta = max(0, new_xferred - xferred)
+                checked = min(max(checked + xfer_delta, from_tocheck), total)
+                xferred = new_xferred
                 # File just completed transfer
                 if current_file:
                     completed_files.append(current_file)

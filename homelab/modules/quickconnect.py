@@ -2,7 +2,7 @@
 
 import subprocess
 
-from homelab.auditlog import log_action
+from homelab.modules.auditlog import log_action
 from homelab.config import CFG, save_config
 from homelab.ui import C, pick_option, prompt_text, info, success, warn
 
@@ -77,7 +77,7 @@ def quick_connect_menu():
         elif idx == len(hosts) + 2:  # Remove custom
             _remove_custom_host()
         elif idx == len(hosts) + 3:  # SSH Keys
-            from homelab.sshkeys import ssh_key_menu
+            from homelab.modules.sshkeys import ssh_key_menu
             ssh_key_menu()
         elif idx < len(hosts):
             _connect(hosts[idx])

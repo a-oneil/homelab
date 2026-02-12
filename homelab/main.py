@@ -7,8 +7,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 from homelab.config import CFG, CONFIG_PATH, HISTORY_PATH, save_config
 from homelab.ui import C, pick_option, success, warn, prompt_text
-from homelab.files import show_history, manage_bookmarks
-from homelab.auditlog import log_action
+from homelab.modules.files import show_history, manage_bookmarks
+from homelab.modules.auditlog import log_action
 from homelab.plugins.unraid import UnraidPlugin
 from homelab.plugins.proxmox import ProxmoxPlugin
 from homelab.plugins.unifi import UnifiPlugin
@@ -322,13 +322,15 @@ def edit_settings(all_actions):
             ("Theme", "__theme", None, False),
             ("Bookmarks", "__bookmarks", None, False),
             ("Favorites", "__favorites", None, False),
-            ("── Preferences ──", "__separator", None, False),
+            (" ", "__spacer", None, False),
+            ("Preferences", "__separator", None, False),
             ("Notifications", "__toggle_notifications", None, False),
             ("Dry Run Mode", "__toggle_dry_run", None, False),
             ("Default Download", "default_download_dir", None, False),
             ("Discord Webhook", "discord_webhook_url", None, False),
             ("Disk Warn (GB)", "disk_space_warn_gb", None, False),
-            ("── Backup ──", "__separator", None, False),
+            (" ", "__spacer", None, False),
+            ("Backup", "__separator", None, False),
             ("Export Config", "__export_config", None, False),
             ("Import Config", "__import_config", None, False),
         ]
@@ -337,7 +339,8 @@ def edit_settings(all_actions):
         for plugin in PLUGINS:
             fields = plugin.get_config_fields()
             if fields:
-                settings_items.append((f"── {plugin.name} ──", "__separator", None, False))
+                settings_items.append((" ", "__spacer", None, False))
+                settings_items.append((plugin.name, "__separator", None, False))
                 for key, label, hint, is_secret in fields:
                     settings_items.append((label, key, hint, is_secret))
 
@@ -345,8 +348,10 @@ def edit_settings(all_actions):
 
         choices = []
         for label, key, hint, is_secret in settings_items:
-            if key == "__separator":
-                choices.append(f"───── {label} ─────")
+            if key == "__spacer":
+                choices.append(" ")
+            elif key == "__separator":
+                choices.append(f"─────── {label} ───────")
             elif key == "__back":
                 choices.append("← Back")
             elif key == "__theme":
@@ -373,7 +378,7 @@ def edit_settings(all_actions):
         label, key, hint, is_secret = settings_items[idx]
         if key == "__back":
             return
-        elif key == "__separator":
+        elif key in ("__separator", "__spacer"):
             continue
         elif key == "__theme":
             from homelab.themes import pick_theme
@@ -502,12 +507,12 @@ def _refresh_header_data():
 
         alerts = []
         try:
-            from homelab.healthmonitor import refresh_health_alerts
+            from homelab.modules.healthmonitor import refresh_health_alerts
             # Check SSH health for the Unraid host if configured
             unraid_host = CFG.get("unraid_ssh_host", "")
             if unraid_host:
                 refresh_health_alerts(host=unraid_host)
-            from homelab.healthmonitor import get_health_alerts
+            from homelab.modules.healthmonitor import get_health_alerts
             alerts = get_health_alerts(PLUGINS)
         except Exception:
             pass
@@ -582,6 +587,8 @@ def _build_all_actions():
         "Container Updates": "check_all_container_updates",
         "Audit Log": "audit_log_menu",
         "Scheduled Tasks": "scheduler_menu",
+        "Disk Usage Analyzer": "disk_usage_menu",
+        "Network Latency": "latency_menu",
     }
     # Add plugin actions (file ops, services, etc.)
     for plugin in PLUGINS:
@@ -601,13 +608,21 @@ def _resolve_favorite(fav):
                     return func
         return None
     # String key
-    from homelab.dashboard import status_dashboard
-    from homelab.transferqueue import transfers_menu
-    from homelab.quickconnect import quick_connect_menu
-    from homelab.containerupdates import check_all_container_updates
-    from homelab.auditlog import audit_log_menu
-    from homelab.scheduler import scheduler_menu
+    from homelab.modules.dashboard import status_dashboard
+    from homelab.modules.transferqueue import transfers_menu
+    from homelab.modules.quickconnect import quick_connect_menu
+    from homelab.modules.containerupdates import check_all_container_updates
+    from homelab.modules.auditlog import audit_log_menu
+    from homelab.modules.scheduler import scheduler_menu
+    from homelab.modules.diskusage import disk_usage_menu
+    from homelab.modules.latency import show_latency_matrix
     from homelab.plugins.dockerhost import docker_servers_menu
+
+    def _resolve_latency():
+        from homelab.modules.quickconnect import _gather_hosts
+        hosts = _gather_hosts()
+        if hosts:
+            show_latency_matrix(hosts)
 
     func_map = {
         "show_history": show_history,
@@ -620,6 +635,8 @@ def _resolve_favorite(fav):
         "check_all_container_updates": check_all_container_updates,
         "audit_log_menu": audit_log_menu,
         "scheduler_menu": scheduler_menu,
+        "disk_usage_menu": disk_usage_menu,
+        "latency_menu": _resolve_latency,
     }
     for plugin in PLUGINS:
         if plugin.is_configured():
@@ -673,18 +690,30 @@ def build_main_menu():
     actions.append(None)
     action_keys.append(None)
 
-    from homelab.dashboard import status_dashboard
-    from homelab.transferqueue import transfers_menu
-    from homelab.quickconnect import quick_connect_menu
-    from homelab.containerupdates import check_all_container_updates
-    from homelab.auditlog import audit_log_menu
-    from homelab.scheduler import scheduler_menu
+    from homelab.modules.dashboard import status_dashboard
+    from homelab.modules.transferqueue import transfers_menu
+    from homelab.modules.quickconnect import quick_connect_menu
+    from homelab.modules.containerupdates import check_all_container_updates
+    from homelab.modules.auditlog import audit_log_menu
+    from homelab.modules.scheduler import scheduler_menu
+    from homelab.modules.diskusage import disk_usage_menu
+    from homelab.modules.latency import show_latency_matrix
     from homelab.plugins.dockerhost import docker_servers_menu
+
+    def _latency_menu():
+        from homelab.modules.quickconnect import _gather_hosts
+        hosts = _gather_hosts()
+        if not hosts:
+            warn("No SSH hosts configured.")
+            return
+        show_latency_matrix(hosts)
 
     tools = [
         ("Audit Log            — actions, transfers, and search", audit_log_menu, "audit_log_menu"),
         ("Container Updates    — check Docker images for updates", check_all_container_updates, "check_all_container_updates"),
+        ("Disk Usage Analyzer  — drill into disk usage on any host", disk_usage_menu, "disk_usage_menu"),
         ("Docker Servers       — manage Linux servers with Docker", docker_servers_menu, "docker_servers_menu"),
+        ("Network Latency      — ping all hosts, show RTT matrix", _latency_menu, "latency_menu"),
         ("Quick Connect        — SSH into any host, manage keys", quick_connect_menu, "quick_connect_menu"),
         ("Scheduled Tasks      — recurring automated actions", scheduler_menu, "scheduler_menu"),
         ("Status Dashboard     — overview of all services", lambda: status_dashboard(PLUGINS), "status_dashboard"),
@@ -744,7 +773,7 @@ def main():
     _schedule_header_refresh()
 
     # Start scheduled tasks if any are configured
-    from homelab.scheduler import start_scheduler
+    from homelab.modules.scheduler import start_scheduler
     start_scheduler()
 
     # Session restore — offer to jump back to last visited menu item

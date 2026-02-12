@@ -13,12 +13,12 @@ from homelab.ui import (
     C, pick_option, pick_multi, confirm, prompt_text, info, success, error,
     warn, check_tool, clear_screen,
 )
-from homelab.transport import (
+from homelab.modules.transport import (
     ssh_run, rsync_transfer, _check_disk_space,
     list_remote_dirs, list_remote_items, format_item,
     pick_rsync_options,
 )
-from homelab.auditlog import log_action
+from homelab.modules.auditlog import log_action
 from homelab.history import log_transfer
 from homelab.notifications import notify, copy_to_clipboard
 

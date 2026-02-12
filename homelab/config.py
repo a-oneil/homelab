@@ -41,9 +41,9 @@ DEFAULT_CONFIG = {
     "disk_space_warn_gb": 5,
     "discord_webhook_url": "",
     # Unraid plugin
-    "unraid_ssh_host": "root@10.20.0.2",
+    "unraid_ssh_host": "",
     "unraid_remote_base": "/mnt/user",
-    "unraid_trash_path": "/mnt/user/.stash_trash",
+    "unraid_trash_path": "/mnt/user/.homelab_trash",
     "unraid_extra_paths": [
         "/boot/config/plugins/compose.manager/projects",
         "/boot/config/plugins/user.scripts",
