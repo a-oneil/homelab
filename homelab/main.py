@@ -823,7 +823,7 @@ def build_main_menu():
     actions.append(lambda: edit_settings(all_actions))
     action_keys.append("edit_settings")
     menu_items.append("Quit")
-    actions.append(None)
+    actions.append("__quit__")
     action_keys.append(None)
 
     return menu_items, actions, action_keys
@@ -894,12 +894,12 @@ def main():
 
         action = actions[idx]
         if action is None:
-            if "Quit" in menu_items[idx]:
-                CFG["session_last_menu"] = ""
-                save_config(CFG)
-                print(f"\n  {C.ACCENT}Goodbye!{C.RESET}\n")
-                sys.exit(0)
             continue  # separator
+        if action == "__quit__":
+            CFG["session_last_menu"] = ""
+            save_config(CFG)
+            print(f"\n  {C.ACCENT}Goodbye!{C.RESET}\n")
+            os._exit(0)
 
         # Save last visited for session restore
         key = action_keys[idx]

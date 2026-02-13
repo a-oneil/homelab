@@ -8,7 +8,7 @@ import questionary
 from prompt_toolkit.formatted_text import ANSI as PTK_ANSI, to_formatted_text
 from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
 from prompt_toolkit.keys import Keys
-from questionary import Choice, Style
+from questionary import Choice, Separator, Style
 
 from homelab.config import CFG
 
@@ -121,6 +121,10 @@ def _make_choices(options):
     choices = []
     for o in options:
         clean = strip_ansi(o)
+        # Use questionary Separator for divider lines so they aren't selectable
+        if clean.startswith("──"):
+            choices.append(Separator(clean))
+            continue
         if ANSI_RE.search(o):
             ft = to_formatted_text(PTK_ANSI(o))
             choices.append(Choice(title=_ANSITitle(ft, clean), value=clean))
