@@ -1,5 +1,6 @@
 """SSH, rsync, and file transfer helpers."""
 
+import shlex
 import subprocess
 import sys
 import tty
@@ -202,6 +203,14 @@ _STATS_PREFIXES = (
 )
 
 
+def _escape_rsync_path(path):
+    """Shell-escape the remote portion of an rsync path (host:path)."""
+    if ':' in path:
+        host, remote = path.split(':', 1)
+        return host + ':' + shlex.quote(remote)
+    return path
+
+
 def rsync_transfer(source, dest_spec, is_dir=False, port=None, extra_args=None):
     if CFG.get("dry_run"):
         info(f"[DRY RUN] Would transfer: {source} → {dest_spec}")
@@ -217,7 +226,9 @@ def rsync_transfer(source, dest_spec, is_dir=False, port=None, extra_args=None):
         cmd = ["rsync", "-ah", "--progress", "--stats", "-e", ssh_cmd]
         if extra_args:
             cmd.extend(extra_args)
-        cmd.extend([source, dest_spec])
+        # Shell-escape remote paths so spaces/special chars survive the
+        # remote shell that rsync spawns (--protect-args isn't universal).
+        cmd.extend([_escape_rsync_path(source), _escape_rsync_path(dest_spec)])
     else:
         cmd = ["scp"]
         if port:

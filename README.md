@@ -88,6 +88,20 @@ cd homelab
 pip install -e .
 ```
 
+### Updating
+```bash
+# pipx
+pipx upgrade homelab
+
+# pip
+pip install --upgrade git+https://github.com/a-oneil/homelab.git
+
+# From source
+cd homelab
+git pull
+pip install -e .
+```
+
 ### Dependencies
 - Python 3.7+
 - `questionary` — interactive terminal menus

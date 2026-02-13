@@ -24,7 +24,6 @@ _SENSITIVE_KEYS = {
     "npm_password", "forgejo_token", "github_token",
     "immich_api_key", "syncthing_api_key",
     "sonarr_api_key", "radarr_api_key", "lidarr_api_key",
-    "discord_webhook_url",
 }
 
 # Legacy paths for migration
