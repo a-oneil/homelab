@@ -16,15 +16,15 @@ def _get_host():
     return CFG.get("unraid_ssh_host", "")
 
 
-def _ts_cmd(args, capture=True):
+def _ts_cmd(args, **kwargs):
     """Run a tailscale CLI command via SSH."""
     from homelab.modules.transport import ssh_run
-    return ssh_run(f"tailscale {args}", host=_get_host())
+    return ssh_run(f"tailscale {args}", host=_get_host(), **kwargs)
 
 
-def _ts_status():
+def _ts_status(background=False):
     """Get tailscale status as JSON."""
-    result = _ts_cmd("status --json")
+    result = _ts_cmd("status --json", background=background)
     if result.returncode != 0 or not result.stdout.strip():
         return None
     try:
@@ -68,7 +68,7 @@ class TailscalePlugin(Plugin):
 
 
 def _fetch_stats():
-    status = _ts_status()
+    status = _ts_status(background=True)
     if status:
         peers = status.get("Peer", {})
         online = sum(1 for p in peers.values() if p.get("Online"))

@@ -28,7 +28,7 @@ def ssh_run(command, capture=True, background=False, host=None, port=None):
             cmd, capture_output=True, text=True, timeout=15,
             stdin=subprocess.DEVNULL,
         )
-    cmd = ["ssh"]
+    cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
     if port:
         cmd.extend(["-p", str(port)])
     cmd.extend([target, command])

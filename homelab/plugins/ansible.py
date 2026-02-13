@@ -69,7 +69,7 @@ class AnsiblePlugin(Plugin):
 
     def get_menu_items(self):
         return [
-            ("Ansible              \u2014 playbooks, inventory, ad-hoc commands", ansible_menu),
+            ("Ansible              — playbooks, inventory, ad-hoc commands", ansible_menu),
         ]
 
     def get_actions(self):
@@ -80,7 +80,7 @@ class AnsiblePlugin(Plugin):
         }
 
 
-# \u2500\u2500\u2500 Stats \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+# ─── Stats ────────────────────────────────────────────────────────────────
 
 
 def _fetch_stats():
@@ -90,7 +90,8 @@ def _fetch_stats():
         return
     result = _ssh(
         f"find '{path}' -maxdepth 2 \\( -name '*.yml' -o -name '*.yaml' \\)"
-        f" | grep -v roles/ | wc -l"
+        f" | grep -v roles/ | wc -l",
+        background=True,
     )
     if result.returncode == 0:
         count = result.stdout.strip()
@@ -98,21 +99,21 @@ def _fetch_stats():
     _HEADER_CACHE["timestamp"] = time.time()
 
 
-# \u2500\u2500\u2500 Main Menu \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+# ─── Main Menu ────────────────────────────────────────────────────────────
 
 
 def ansible_menu():
     while True:
         idx = pick_option("Ansible:", [
-            "Playbooks            \u2014 list and run playbooks",
-            "Inventory            \u2014 view hosts and groups",
-            "Ad-hoc Command       \u2014 run commands on hosts",
-            "Roles                \u2014 list installed roles",
-            "Vault                \u2014 manage encrypted files",
-            "Galaxy               \u2014 installed collections",
-            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
-            "\u2605 Add to Favorites   \u2014 pin an action to the main menu",
-            "\u2190 Back",
+            "Playbooks            — list and run playbooks",
+            "Inventory            — view hosts and groups",
+            "Ad-hoc Command       — run commands on hosts",
+            "Roles                — list installed roles",
+            "Vault                — manage encrypted files",
+            "Galaxy               — installed collections",
+            "───────────────",
+            "★ Add to Favorites   — pin an action to the main menu",
+            "← Back",
         ])
         if idx == 8:
             return
@@ -135,7 +136,7 @@ def ansible_menu():
             _galaxy_menu()
 
 
-# \u2500\u2500\u2500 Playbooks \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+# ─── Playbooks ────────────────────────────────────────────────────────────
 
 
 def _playbooks_menu():
@@ -161,7 +162,7 @@ def _playbooks_menu():
             display.append(rel)
 
         choices = list(display)
-        choices.append("\u2190 Back")
+        choices.append("← Back")
         idx = pick_option("Playbooks:", choices)
         if idx >= len(playbooks):
             return
@@ -187,7 +188,7 @@ def _playbook_detail(playbook_path, display_name):
         "Run playbook",
         "Dry run (--check)",
         "View full file",
-        "\u2190 Back",
+        "← Back",
     ]
     idx = pick_option(f"Playbook: {display_name}", choices)
     if idx == 3:
@@ -216,7 +217,7 @@ def _playbook_detail(playbook_path, display_name):
             warn("Could not read playbook file.")
 
 
-# \u2500\u2500\u2500 Inventory \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+# ─── Inventory ────────────────────────────────────────────────────────────
 
 
 def _inventory_menu():
@@ -227,9 +228,9 @@ def _inventory_menu():
 
     while True:
         idx = pick_option("Inventory:", [
-            "Graph view           \u2014 tree of hosts and groups",
-            "List view            \u2014 detailed YAML inventory",
-            "\u2190 Back",
+            "Graph view           — tree of hosts and groups",
+            "List view            — detailed YAML inventory",
+            "← Back",
         ])
         if idx == 2:
             return
@@ -263,7 +264,7 @@ def _inventory_list():
     scrollable_list("Inventory (YAML):", lines)
 
 
-# \u2500\u2500\u2500 Ad-hoc Command \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+# ─── Ad-hoc Command ──────────────────────────────────────────────────────
 
 
 def _adhoc_menu():
@@ -292,7 +293,7 @@ def _adhoc_menu():
         input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
 
 
-# \u2500\u2500\u2500 Roles \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+# ─── Roles ────────────────────────────────────────────────────────────────
 
 
 def _roles_menu():
@@ -329,7 +330,7 @@ def _roles_menu():
     scrollable_list(f"Roles ({len(roles)}):", rows)
 
 
-# \u2500\u2500\u2500 Vault \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+# ─── Vault ────────────────────────────────────────────────────────────────
 
 
 def _vault_menu():
@@ -340,11 +341,11 @@ def _vault_menu():
 
     while True:
         idx = pick_option("Vault:", [
-            "View encrypted file  \u2014 decrypt and display",
-            "Edit encrypted file  \u2014 open in editor",
-            "Encrypt a file       \u2014 encrypt an existing file",
-            "Decrypt a file       \u2014 decrypt in place",
-            "\u2190 Back",
+            "View encrypted file  — decrypt and display",
+            "Edit encrypted file  — open in editor",
+            "Encrypt a file       — encrypt an existing file",
+            "Decrypt a file       — decrypt in place",
+            "← Back",
         ])
         if idx == 4:
             return
@@ -381,7 +382,7 @@ def _vault_pick_file():
         display.append(rel)
 
     choices = list(display)
-    choices.append("\u2190 Back")
+    choices.append("← Back")
     idx = pick_option("Encrypted files:", choices)
     if idx >= len(files):
         return None
@@ -426,7 +427,7 @@ def _vault_encrypt():
         display.append(rel)
 
     choices = list(display)
-    choices.append("\u2190 Back")
+    choices.append("← Back")
     idx = pick_option("Encrypt which file?", choices)
     if idx >= len(files):
         return
@@ -451,7 +452,7 @@ def _vault_decrypt():
         input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
 
 
-# \u2500\u2500\u2500 Galaxy \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+# ─── Galaxy ───────────────────────────────────────────────────────────────
 
 
 def _galaxy_menu():

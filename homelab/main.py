@@ -1,6 +1,7 @@
 """Entry point, CLI args, main menu loop, and plugin registry."""
 
 import os
+import subprocess
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -495,6 +496,41 @@ def _collect_plugin_data(plugin):
     return result
 
 
+def _test_ssh_hosts():
+    """Test SSH connectivity to all configured hosts. Returns alert strings for failures."""
+    hosts = {}  # host -> (port or None)
+    # Gather hosts from any config key ending in _ssh_host
+    for key, val in CFG.items():
+        if key.endswith("_ssh_host") and isinstance(val, str) and val:
+            port_key = key.replace("_ssh_host", "_ssh_port")
+            port = CFG.get(port_key, "") or None
+            hosts[val] = port
+    # Gather docker_servers
+    for server in CFG.get("docker_servers", []):
+        h = server.get("host", "")
+        if h:
+            hosts[h] = server.get("port", "") or None
+
+    alerts = []
+    for host, port in hosts.items():
+        try:
+            cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
+            if port:
+                cmd.extend(["-p", str(port)])
+            cmd.extend([host, "true"])
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=10,
+                stdin=subprocess.DEVNULL,
+            )
+            if result.returncode != 0:
+                short = host.split("@")[-1] if "@" in host else host
+                alerts.append(f"{C.RED}SSH:{C.RESET} {short} — run: ssh-copy-id {host}")
+        except Exception:
+            short = host.split("@")[-1] if "@" in host else host
+            alerts.append(f"{C.RED}SSH:{C.RESET} {short} — run: ssh-copy-id {host}")
+    return alerts
+
+
 def _refresh_header_data():
     """Refresh all header data (health alerts + plugin stats) in background."""
     if _REFRESH_IN_PROGRESS.is_set():
@@ -506,6 +542,10 @@ def _refresh_header_data():
         from concurrent.futures import as_completed
 
         alerts = []
+
+        # Test SSH connectivity — show alerts for unreachable hosts
+        alerts.extend(_test_ssh_hosts())
+
         try:
             from homelab.modules.healthmonitor import refresh_health_alerts
             # Check SSH health for the Unraid host if configured
@@ -513,7 +553,7 @@ def _refresh_header_data():
             if unraid_host:
                 refresh_health_alerts(host=unraid_host)
             from homelab.modules.healthmonitor import get_health_alerts
-            alerts = get_health_alerts(PLUGINS)
+            alerts.extend(get_health_alerts(PLUGINS))
         except Exception:
             pass
 
