@@ -22,7 +22,7 @@ setup(
             "homelab=homelab.main:main",
         ],
     },
-    install_requires=["questionary", "uptime-kuma-api", "cryptography", "speedtest-cli"],
+    install_requires=["questionary", "uptime-kuma-api", "cryptography", "speedtest-cli", "psutil"],
     python_requires=">=3.7",
     classifiers=[
         "Development Status :: 4 - Beta",
