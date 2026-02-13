@@ -22,11 +22,11 @@ def _notify_discord(title, message):
             ).encode()
             req = urllib.request.Request(
                 webhook_url, data=payload,
-                headers={"Content-Type": "application/json"},
+                headers={"Content-Type": "application/json", "User-Agent": "Homelab"},
             )
             urllib.request.urlopen(req, timeout=10)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"\n⚠ Discord notification failed: {e}")
 
     threading.Thread(target=_send, daemon=True).start()
 
