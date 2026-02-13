@@ -121,7 +121,7 @@ class JellyfinPlugin(Plugin):
                     item = s.get("NowPlayingItem", {})
                     title = item.get("SeriesName", item.get("Name", "?"))
                     paused = s.get("PlayState", {}).get("IsPaused", False)
-                    icon = f"{C.YELLOW}\u23f8{C.RESET}" if paused else f"{C.GREEN}\u25b6{C.RESET}"
+                    icon = f"{C.YELLOW}⏸{C.RESET}" if paused else f"{C.GREEN}▶{C.RESET}"
                     lines.append(f"  {icon} {user}: {title}")
             else:
                 lines.append(f"{C.DIM}No active streams{C.RESET}")
@@ -138,7 +138,7 @@ class JellyfinPlugin(Plugin):
 
     def get_menu_items(self):
         return [
-            ("Jellyfin             \u2014 media, users, tasks, search", jellyfin_menu),
+            ("Jellyfin             — media, users, tasks, search", jellyfin_menu),
         ]
 
     def get_actions(self):
@@ -156,19 +156,19 @@ class JellyfinPlugin(Plugin):
 def jellyfin_menu():
     while True:
         idx = pick_option("Jellyfin:", [
-            "Now Playing          \u2014 active sessions and streams",
-            "Library Stats        \u2014 item counts and storage",
-            "Recently Added       \u2014 latest additions to library",
-            "Search               \u2014 find media by title, year, genre",
-            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
-            "Users                \u2014 manage users and permissions",
-            "Scheduled Tasks      \u2014 view and trigger server tasks",
-            "Activity Log         \u2014 recent server activity",
-            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
-            "Scan Libraries       \u2014 trigger library refresh",
-            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
-            "\u2605 Add to Favorites   \u2014 pin an action to the main menu",
-            "\u2190 Back",
+            "Now Playing          — active sessions and streams",
+            "Library Stats        — item counts and storage",
+            "Recently Added       — latest additions to library",
+            "Search               — find media by title, year, genre",
+            "───────────────",
+            "Users                — manage users and permissions",
+            "Scheduled Tasks      — view and trigger server tasks",
+            "Activity Log         — recent server activity",
+            "───────────────",
+            "Scan Libraries       — trigger library refresh",
+            "───────────────",
+            "★ Add to Favorites   — pin an action to the main menu",
+            "← Back",
         ])
         if idx == 12:
             return
@@ -244,13 +244,13 @@ def _now_playing():
             else:
                 pct_str = "?"
 
-            icon = f"{C.YELLOW}\u23f8{C.RESET}" if paused else f"{C.GREEN}\u25b6{C.RESET}"
+            icon = f"{C.YELLOW}⏸{C.RESET}" if paused else f"{C.GREEN}▶{C.RESET}"
             choices.append(f"{icon} {user:<15} {title:<35} {pct_str:>4}  {tc_str}  ({device})")
 
         session_count = len(choices)
-        choices.append("\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
-        choices.append("\u21bb Refresh")
-        choices.append("\u2190 Back")
+        choices.append("───────────────")
+        choices.append("↻ Refresh")
+        choices.append("← Back")
 
         idx = pick_option(f"Now Playing ({session_count}):", choices)
         if idx == session_count or idx == session_count + 1:
@@ -280,7 +280,7 @@ def _session_detail(session):
         print(f"  {C.BOLD}Video:{C.RESET}    {'direct' if transcode.get('IsVideoDirect') else 'transcode'}")
         print(f"  {C.BOLD}Audio:{C.RESET}    {'direct' if transcode.get('IsAudioDirect') else 'transcode'}")
 
-    aidx = pick_option(f"{user} \u2014 {title}:", ["Stop stream", "\u2190 Back"])
+    aidx = pick_option(f"{user} — {title}:", ["Stop stream", "← Back"])
     if aidx == 0:
         if not confirm(f"Stop stream for '{user}'?", default_yes=False):
             return
@@ -352,7 +352,7 @@ def _recently_added():
         name = item.get("Name", "?")
         series = item.get("SeriesName", "")
         if series:
-            display = f"{series} \u2014 {name}"
+            display = f"{series} — {name}"
         else:
             display = name
 
@@ -399,13 +399,13 @@ def _search():
             }.get(htype, htype)
 
             if series:
-                display = f"{series} \u2014 {name}"
+                display = f"{series} — {name}"
             else:
                 display = name
             year_str = f" ({year})" if year else ""
             choices.append(f"[{type_label:<10}] {display}{year_str}")
 
-        choices.append("\u2190 Back")
+        choices.append("← Back")
         idx = pick_option(f"Search: '{term}' ({len(hints)} results):", choices)
         if idx >= len(hints):
             return
@@ -470,13 +470,13 @@ def _users():
             is_disabled = user.get("Policy", {}).get("IsDisabled", False)
 
             if is_disabled:
-                icon = f"{C.RED}\u25cf{C.RESET}"
+                icon = f"{C.RED}●{C.RESET}"
                 status = "Disabled"
             elif is_admin:
-                icon = f"{C.GREEN}\u25cf{C.RESET}"
+                icon = f"{C.GREEN}●{C.RESET}"
                 status = "Admin"
             else:
-                icon = f"{C.CYAN}\u25cf{C.RESET}"
+                icon = f"{C.CYAN}●{C.RESET}"
                 status = "User"
 
             last_active = user.get("LastActivityDate", "")
@@ -498,9 +498,9 @@ def _users():
             choices.append(f"{icon} {name:<20} ({status:<8})  last active: {active_str}")
 
         user_count = len(choices)
-        choices.append("\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
-        choices.append("\u21bb Refresh")
-        choices.append("\u2190 Back")
+        choices.append("───────────────")
+        choices.append("↻ Refresh")
+        choices.append("← Back")
 
         idx = pick_option(f"Users ({user_count}):", choices)
         if idx == user_count + 2:
@@ -534,9 +534,9 @@ def _user_actions(user):
 
     toggle_label = "Enable" if is_disabled else "Disable"
     options = [
-        f"{toggle_label} User       \u2014 {'enable' if is_disabled else 'disable'} this account",
-        "Playback History     \u2014 recently watched items",
-        "\u2190 Back",
+        f"{toggle_label} User       — {'enable' if is_disabled else 'disable'} this account",
+        "Playback History     — recently watched items",
+        "← Back",
     ]
     aidx = pick_option(f"User: {name}", options)
     if aidx == 2:
@@ -576,7 +576,7 @@ def _user_history(user_id, username):
         series = item.get("SeriesName", "")
         itype = item.get("Type", "?")
         if series:
-            display = f"{series} \u2014 {name}"
+            display = f"{series} — {name}"
         else:
             display = name
 
@@ -614,16 +614,16 @@ def _scheduled_tasks():
 
             if state == "Running":
                 pct = task.get("CurrentProgressPercentage", 0)
-                icon = f"{C.CYAN}\u25cf{C.RESET}"
+                icon = f"{C.CYAN}●{C.RESET}"
                 status_str = f"running ({pct:.0f}%)"
             elif last_status == "Completed":
-                icon = f"{C.GREEN}\u25cf{C.RESET}"
+                icon = f"{C.GREEN}●{C.RESET}"
                 status_str = "completed"
             elif last_status == "Failed":
-                icon = f"{C.RED}\u25cf{C.RESET}"
+                icon = f"{C.RED}●{C.RESET}"
                 status_str = "failed"
             else:
-                icon = f"{C.DIM}\u25cf{C.RESET}"
+                icon = f"{C.DIM}●{C.RESET}"
                 status_str = "idle"
 
             # Last run time
@@ -646,9 +646,9 @@ def _scheduled_tasks():
             choices.append(f"{icon} {display_name:<35} {status_str:<15}{last_str}")
 
         task_count = len(choices)
-        choices.append("\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
-        choices.append("\u21bb Refresh")
-        choices.append("\u2190 Back")
+        choices.append("───────────────")
+        choices.append("↻ Refresh")
+        choices.append("← Back")
 
         idx = pick_option(f"Scheduled Tasks ({task_count}):", choices)
         if idx == task_count + 2:
@@ -694,7 +694,7 @@ def _task_actions(task):
     if triggers:
         print(f"  {C.BOLD}Triggers:{C.RESET} {len(triggers)} configured")
 
-    aidx = pick_option(f"Task: {name}", ["Run Now", "\u2190 Back"])
+    aidx = pick_option(f"Task: {name}", ["Run Now", "← Back"])
     if aidx == 0:
         if _api_post(f"/ScheduledTasks/Running/{task_id}"):
             success(f"Task triggered: {name}")
@@ -731,11 +731,11 @@ def _activity_log():
                 date_str = "?"
 
         if severity == "Error":
-            icon = f"{C.RED}\u2717{C.RESET}"
+            icon = f"{C.RED}✗{C.RESET}"
         elif severity == "Warning":
-            icon = f"{C.YELLOW}\u25cf{C.RESET}"
+            icon = f"{C.YELLOW}●{C.RESET}"
         else:
-            icon = f"{C.DIM}\u25cf{C.RESET}"
+            icon = f"{C.DIM}●{C.RESET}"
 
         short_text = entry.get("ShortOverview", "")
         detail = f"  {C.DIM}{short_text}{C.RESET}" if short_text else ""

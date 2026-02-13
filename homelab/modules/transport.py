@@ -1,7 +1,5 @@
 """SSH, rsync, and file transfer helpers."""
 
-import os
-import re
 import subprocess
 import sys
 import tty
@@ -72,6 +70,7 @@ RSYNC_OPTIONS = [
     ("--update", "Skip newer", "skip files that are newer on the destination"),
     ("--append-verify", "Resume partial", "resume incomplete files + verify with checksum"),
     ("--delete", "Delete extra", "remove files on destination not in source"),
+    ("--remove-source-files", "Remove source", "delete source files after successful transfer (move)"),
     ("--compress", "Compress", "compress data during transfer (slow network)"),
     ("--bwlimit", "Bandwidth limit", "cap transfer speed (KiB/s)"),
     ("--dry-run", "Dry run", "show what would be transferred without doing it"),
@@ -135,11 +134,19 @@ def _render_rsync_picker(cursor, selected, total_lines, source="", dest="", port
     return len(lines)
 
 
-def pick_rsync_options(source="", dest="", port=None):
-    """Interactive rsync option picker with live command preview."""
+def pick_rsync_options(source="", dest="", port=None, preselected=None):
+    """Interactive rsync option picker with live command preview.
+
+    Args:
+        preselected: set of flag strings to pre-select (e.g. {"--remove-source-files"}).
+    """
     clear_screen()
     cursor = 0
     selected = set()
+    if preselected:
+        for i, (flag, _, _) in enumerate(RSYNC_OPTIONS):
+            if flag in preselected:
+                selected.add(i)
     total_lines = 0
 
     total_lines = _render_rsync_picker(cursor, selected, total_lines, source, dest, port)
@@ -188,164 +195,11 @@ def pick_rsync_options(source="", dest="", port=None):
     return extra
 
 
-# Regex for rsync --progress output lines
-_RSYNC_PROGRESS_RE = re.compile(
-    r'\s+([\d,]+)\s+(\d+)%\s+([\d.]+\S+/s)\s+(\S+)'
-    r'(?:\s+\(x(?:fer|fr)#(\d+),\s*to-ch(?:eck|k)=(\d+)/(\d+)\))?'
-)
-
 _STATS_PREFIXES = (
     "Number of ", "Total file size", "Total transferred",
     "Literal data", "Matched data", "File list",
     "sent ", "total size",
 )
-
-
-_MAX_RECENT = 8
-
-
-def _render_transfer_progress(file_name, file_pct, speed,
-                              checked, total, xferred,
-                              completed_files, lines_rendered):
-    """Render progress with scrolling completed file list. Returns line count."""
-    try:
-        term_w = os.get_terminal_size().columns
-    except (ValueError, OSError):
-        term_w = 80
-
-    lines = []
-
-    # Line 1: overall progress bar
-    bar_w = 30
-    if total > 0:
-        # Interpolate current file progress for smoother bar movement
-        file_frac = 0
-        try:
-            if file_pct:
-                file_frac = int(file_pct) / 100
-        except (ValueError, TypeError):
-            pass
-        effective = checked + file_frac
-        pct = min(effective / total, 1.0)
-        filled = int(bar_w * pct)
-        bar = f"{C.ACCENT}{'█' * filled}{C.DIM}{'░' * (bar_w - filled)}{C.RESET}"
-        remaining = total - checked
-        lines.append(f"  [{bar}] {pct:>4.0%}"
-                     f" | {speed:>12}"
-                     f" | {xferred} sent, {remaining} remaining")
-    else:
-        bar = f"{C.DIM}{'░' * bar_w}{C.RESET}"
-        lines.append(f"  [{bar}]  ... | {'scanning...':>12}")
-
-    # Recently completed files
-    max_name = term_w - 8
-    for fname in completed_files[-_MAX_RECENT:]:
-        name = fname
-        if len(name) > max_name > 4:
-            name = "…" + name[-(max_name - 1):]
-        lines.append(f"  {C.GREEN}✓{C.RESET} {C.DIM}{name}{C.RESET}")
-
-    # Current file + per-file %
-    max_cur = term_w - 15
-    name = file_name
-    if len(name) > max_cur > 4:
-        name = "…" + name[-(max_cur - 1):]
-    cur = f"  {C.ACCENT}→{C.RESET} {name}"
-    if file_pct and name:
-        cur += f"  {C.DIM}{file_pct}%{C.RESET}"
-    lines.append(cur)
-
-    # Overwrite previous render
-    if lines_rendered > 0:
-        sys.stdout.write(f"\033[{lines_rendered}A")
-
-    for ln in lines:
-        sys.stdout.write(f"\033[2K{ln}\n")
-    sys.stdout.flush()
-
-    return len(lines)
-
-
-def _display_rsync_progress(proc, output_lines):
-    """Parse rsync --progress output and render a live progress display."""
-    current_file = ""
-    total = 0
-    checked = 0
-    xferred = 0
-    speed = ""
-    file_pct = ""
-    lines_rendered = 0
-    in_stats = False
-    error_lines = []
-    completed_files = []
-
-    # Use readline for real-time output (default iterator buffers in binary mode)
-    for raw in iter(proc.stdout.readline, b""):
-        line = raw.decode("utf-8", errors="replace")
-        output_lines.append(line)
-
-        # rsync may embed \r for in-place updates within a single \n line;
-        # only process the last segment (most recent update)
-        segment = line.rstrip("\n").rsplit("\r", 1)[-1]
-        stripped = segment.rstrip()
-
-        if not stripped:
-            continue
-
-        # Detect end-of-transfer stats section
-        trimmed = stripped.lstrip()
-        if any(trimmed.startswith(p) for p in _STATS_PREFIXES):
-            in_stats = True
-        if in_stats:
-            continue
-
-        # Try to parse as a progress line
-        m = _RSYNC_PROGRESS_RE.match(stripped)
-        if m:
-            file_pct = m.group(2)
-            speed = m.group(3)
-            if m.group(5):
-                new_xferred = int(m.group(5))
-                remaining_rsync = int(m.group(6))
-                new_total = int(m.group(7))
-                total = max(total, new_total)
-                from_tocheck = new_total - remaining_rsync
-                # Advance checked by at least 1 per transferred file
-                # (handles incremental recursion where total grows and
-                # to-check progress appears stuck)
-                xfer_delta = max(0, new_xferred - xferred)
-                checked = min(max(checked + xfer_delta, from_tocheck), total)
-                xferred = new_xferred
-                # File just completed transfer
-                if current_file:
-                    completed_files.append(current_file)
-        elif not stripped.startswith(" "):
-            trimmed = stripped.strip()
-            # Detect error lines from rsync/ssh
-            if (trimmed.startswith("rsync:") or trimmed.startswith("rsync error")
-                    or trimmed.startswith("ssh:") or trimmed.startswith("@ERROR")):
-                error_lines.append(trimmed)
-                continue
-            # Filename line
-            current_file = trimmed
-            file_pct = ""
-        else:
-            continue
-
-        lines_rendered = _render_transfer_progress(
-            current_file, file_pct, speed,
-            checked, total, xferred,
-            completed_files, lines_rendered,
-        )
-
-    # Clear progress display
-    if lines_rendered > 0:
-        sys.stdout.write(f"\033[{lines_rendered}A\033[J")
-        sys.stdout.flush()
-
-    # Show any rsync errors that were collected
-    for err in error_lines:
-        error(err[:200])
 
 
 def rsync_transfer(source, dest_spec, is_dir=False, port=None, extra_args=None):
@@ -378,44 +232,47 @@ def rsync_transfer(source, dest_spec, is_dir=False, port=None, extra_args=None):
         info(f"Options: {' '.join(extra_args)}")
     print()
 
-    proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-    )
-    output_lines = []
+    is_dry_run = extra_args and "--dry-run" in extra_args
 
-    if use_rsync:
-        _display_rsync_progress(proc, output_lines)
-    else:
+    if is_dry_run:
+        # Capture output for dry-run file listing
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        )
+        output_lines = []
         for raw in iter(proc.stdout.readline, b""):
             line = raw.decode("utf-8", errors="replace")
-            print(line, end="")
             output_lines.append(line)
-    proc.wait()
+        proc.wait()
 
-    if proc.returncode == 0 and use_rsync:
-        full = "".join(output_lines)
-        m = re.search(
-            r"sent\s+([\d,]+)\s+bytes.*?([\d,.]+)\s+bytes/sec",
-            full,
-        )
-        if m:
-            sent = int(m.group(1).replace(",", ""))
-            speed = float(m.group(2).replace(",", ""))
-            if sent > 1_000_000:
-                sz = f"{sent / 1_000_000:.1f} MB"
+        if use_rsync:
+            files_listed = []
+            for line in output_lines:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                trimmed = stripped.lstrip()
+                if any(trimmed.startswith(p) for p in _STATS_PREFIXES):
+                    continue
+                if trimmed.startswith("created directory"):
+                    continue
+                files_listed.append(stripped)
+            if files_listed:
+                print(f"  {C.BOLD}Files that would be transferred:{C.RESET}")
+                for f in files_listed:
+                    print(f"    {C.ACCENT}{f}{C.RESET}")
+                print()
             else:
-                sz = f"{sent / 1_000:.1f} KB"
-            if speed > 1_000_000:
-                spd = f"{speed / 1_000_000:.1f} MB/s"
-            else:
-                spd = f"{speed / 1_000:.1f} KB/s"
-            info(f"Transfer: {sz} at {spd}")
+                info("No files would be transferred (all up to date).")
+    else:
+        # Show raw rsync/scp output directly
+        proc = subprocess.run(cmd)
 
     class Result:
         pass
     r = Result()
     r.returncode = proc.returncode
-    r.stdout = "".join(output_lines)
+    r.stdout = ""
     return r
 
 

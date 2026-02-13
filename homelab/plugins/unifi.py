@@ -158,7 +158,7 @@ class UnifiPlugin(Plugin):
 
     def get_menu_items(self):
         return [
-            ("UniFi                \u2014 network clients and devices", unifi_menu),
+            ("UniFi                — network clients and devices", unifi_menu),
         ]
 
     def get_actions(self):
@@ -184,13 +184,13 @@ def _fetch_stats():
 def unifi_menu():
     while True:
         idx = pick_option("UniFi:", [
-            "Clients               \u2014 active devices, bandwidth, block/unblock",
-            "Network Devices       \u2014 APs, switches, gateways",
-            "Wireless Analysis     \u2014 RF environment per AP",
-            "Firmware Updates      \u2014 check and apply device updates",
-            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
-            "\u2605 Add to Favorites   \u2014 pin an action to the main menu",
-            "\u2190 Back",
+            "Clients               — active devices, bandwidth, block/unblock",
+            "Network Devices       — APs, switches, gateways",
+            "Wireless Analysis     — RF environment per AP",
+            "Firmware Updates      — check and apply device updates",
+            "───────────────",
+            "★ Add to Favorites   — pin an action to the main menu",
+            "← Back",
         ])
         if idx == 6:
             return
@@ -264,11 +264,11 @@ def _show_clients():
             blocked = c.get("blocked", False)
             sig = c.get("signal")
             if blocked:
-                dot = f"{C.RED}\u25cf{C.RESET}"
+                dot = f"{C.RED}●{C.RESET}"
             elif sig:
-                dot = f"{C.CYAN}\u25cf{C.RESET}"
+                dot = f"{C.CYAN}●{C.RESET}"
             else:
-                dot = f"{C.GREEN}\u25cf{C.RESET}"
+                dot = f"{C.GREEN}●{C.RESET}"
             if sig:
                 sig_val = int(sig)
                 sig_color = C.GREEN if sig_val > -50 else C.YELLOW if sig_val > -70 else C.RED
@@ -279,7 +279,7 @@ def _show_clients():
             rx = c.get("rx_bytes", 0)
             bw = ""
             if tx or rx:
-                bw = f"  {C.DIM}\u2193{_format_bytes(rx)} \u2191{_format_bytes(tx)}{C.RESET}"
+                bw = f"  {C.DIM}↓{_format_bytes(rx)} ↑{_format_bytes(tx)}{C.RESET}"
             blocked_tag = f"  {C.RED}BLOCKED{C.RESET}" if blocked else ""
             choices.append(f"{dot} {hostname:<22} {ip:<16} {uptime:<10} {signal}{bw}{blocked_tag}")
             clients.append(c)
@@ -287,10 +287,10 @@ def _show_clients():
         client_count = len(choices)
         sort_next = {"name": "ip", "ip": "bandwidth", "bandwidth": "name"}
         sort_label = f"Sort: by {sort_next[sort_by]}  {C.DIM}(current: {sort_by}){C.RESET}"
-        choices.append("\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
+        choices.append("───────────────")
         choices.append(sort_label)
-        choices.append("\u21bb Refresh")
-        choices.append("\u2190 Back")
+        choices.append("↻ Refresh")
+        choices.append("← Back")
 
         idx = pick_option(f"Clients ({client_count}):", choices)
 
@@ -338,16 +338,16 @@ def _client_detail(client, opener, base):
     else:
         print(f"  {C.BOLD}Connection:{C.RESET} wired")
     if tx or rx:
-        print(f"  {C.BOLD}Traffic:{C.RESET}   {C.GREEN}\u2193{C.RESET} {_format_bytes(rx)}  {C.ACCENT}\u2191{C.RESET} {_format_bytes(tx)}")
+        print(f"  {C.BOLD}Traffic:{C.RESET}   {C.GREEN}↓{C.RESET} {_format_bytes(rx)}  {C.ACCENT}↑{C.RESET} {_format_bytes(tx)}")
     if blocked:
         print(f"  {C.BOLD}Status:{C.RESET}    {C.RED}BLOCKED{C.RESET}")
 
     block_label = "Unblock client" if blocked else "Block client"
-    alias_label = f"Set alias             \u2014 currently '{alias}'" if alias else "Set alias"
+    alias_label = f"Set alias             — currently '{alias}'" if alias else "Set alias"
     aidx = pick_option(f"{display_name}:", [
         alias_label,
         block_label,
-        "\u2190 Back",
+        "← Back",
     ])
     if aidx == 2:
         return
@@ -383,7 +383,7 @@ def _set_alias(client, opener, base, display_name, user_id):
     result = _api_put(opener, base, f"rest/user/{user_id}", {"name": new_alias})
     if result is not None:
         label = f"'{new_alias}'" if new_alias else "cleared"
-        log_action("UniFi Set Alias", f"{display_name} \u2192 {label}")
+        log_action("UniFi Set Alias", f"{display_name} → {label}")
         success(f"Alias {label} for {display_name}")
     else:
         error("Failed to set alias.")
@@ -411,13 +411,13 @@ def _show_devices():
             adopted = d.get("adopted", False)
             state = d.get("state", 0)
             if not adopted:
-                dot = f"{C.YELLOW}\u25cf{C.RESET}"
+                dot = f"{C.YELLOW}●{C.RESET}"
                 status = f"{C.YELLOW}pending{C.RESET}"
             elif state == 1:
-                dot = f"{C.GREEN}\u25cf{C.RESET}"
+                dot = f"{C.GREEN}●{C.RESET}"
                 status = f"{C.GREEN}online{C.RESET}"
             else:
-                dot = f"{C.RED}\u25cf{C.RESET}"
+                dot = f"{C.RED}●{C.RESET}"
                 status = f"{C.RED}offline{C.RESET}"
             tlabel = type_labels.get(dtype, dtype)
             choices.append(f"{dot} {name:<20} {C.DIM}{tlabel:<8}{C.RESET} {ip:<16} {status}  {C.DIM}Up: {uptime}{C.RESET}")
@@ -466,19 +466,19 @@ def _device_detail(device, opener, base):
     ssh_user = CFG.get("unifi_ssh_user", "admin")
 
     action_items = [
-        f"SSH to device          \u2014 ssh {ssh_user}@{ip}",
-        "Restart device         \u2014 reboot this device",
+        f"SSH to device          — ssh {ssh_user}@{ip}",
+        "Restart device         — reboot this device",
     ]
     if dtype in ("usw",):
-        action_items.append("Port Stats             \u2014 per-port link state and traffic")
+        action_items.append("Port Stats             — per-port link state and traffic")
     if upgradable:
-        action_items.append(f"Upgrade Firmware       \u2014 update to {upgrade_to}")
-    action_items.append("\u2190 Back")
+        action_items.append(f"Upgrade Firmware       — update to {upgrade_to}")
+    action_items.append("← Back")
 
     aidx = pick_option(f"{name}:", action_items)
     action = action_items[aidx]
 
-    if action.startswith("\u2190"):
+    if action.startswith("←"):
         return
     elif action.startswith("SSH"):
         log_action("UniFi SSH to Device", f"{name} ({ip})")
@@ -502,7 +502,7 @@ def _device_detail(device, opener, base):
         if confirm(f"Upgrade {name} to firmware {upgrade_to}?", default_yes=False):
             result = _api_post(opener, base, "cmd/devmgr", {"cmd": "upgrade", "mac": mac})
             if result is not None:
-                log_action("UniFi Firmware Upgrade", f"{name} \u2192 {upgrade_to}")
+                log_action("UniFi Firmware Upgrade", f"{name} → {upgrade_to}")
                 success(f"Firmware upgrade initiated: {name}")
             else:
                 error("Failed to trigger firmware upgrade.")
@@ -586,7 +586,7 @@ def _switch_port_stats(device):
         input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
         return
 
-    print(f"\n  {C.BOLD}{name} \u2014 Switch Ports{C.RESET}\n")
+    print(f"\n  {C.BOLD}{name} — Switch Ports{C.RESET}\n")
     print(
         f"  {C.DIM}{'Port':<6} {'Name':<16} {'Link':<8} {'Speed':<12} "
         f"{'Rx':>12} {'Tx':>12} {'PoE':>6}{C.RESET}")
@@ -646,20 +646,20 @@ def _firmware_updates():
             dev_name = d.get("name", d.get("model", "?"))
             current = d.get("version", "?")
             upgrade_to = d.get("upgrade_to_firmware", "?")
-            choices.append(f"{dev_name:<20} {current} \u2192 {C.GREEN}{upgrade_to}{C.RESET}")
+            choices.append(f"{dev_name:<20} {current} → {C.GREEN}{upgrade_to}{C.RESET}")
 
         choices.extend([
-            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+            "───────────────",
             "Upgrade All",
-            "\u2190 Back",
+            "← Back",
         ])
 
         hdr = f"\n  {C.BOLD}Firmware Updates{C.RESET}  ({len(upgradable)} device(s) with updates)\n"
         idx = pick_option("", choices, header=hdr)
 
-        if choices[idx].startswith("\u2190"):
+        if choices[idx].startswith("←"):
             return
-        elif choices[idx].startswith("\u2500"):
+        elif choices[idx].startswith("─"):
             continue
         elif choices[idx] == "Upgrade All":
             if confirm(f"Upgrade firmware on {len(upgradable)} device(s)?", default_yes=False):
@@ -670,7 +670,7 @@ def _firmware_updates():
                     info(f"Upgrading {dev_name}...")
                     result = _api_post(opener, base, "cmd/devmgr", {"cmd": "upgrade", "mac": mac})
                     if result is not None:
-                        log_action("UniFi Firmware Upgrade", f"{dev_name} \u2192 {upgrade_to}")
+                        log_action("UniFi Firmware Upgrade", f"{dev_name} → {upgrade_to}")
                         success(f"  {dev_name}: upgrade initiated")
                     else:
                         error(f"  {dev_name}: upgrade failed")
@@ -684,7 +684,7 @@ def _firmware_updates():
             if confirm(f"Upgrade {dev_name} to {upgrade_to}?", default_yes=False):
                 result = _api_post(opener, base, "cmd/devmgr", {"cmd": "upgrade", "mac": mac})
                 if result is not None:
-                    log_action("UniFi Firmware Upgrade", f"{dev_name} \u2192 {upgrade_to}")
+                    log_action("UniFi Firmware Upgrade", f"{dev_name} → {upgrade_to}")
                     success(f"Upgrade initiated: {dev_name}")
                 else:
                     error("Upgrade failed.")

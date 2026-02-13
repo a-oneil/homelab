@@ -52,7 +52,7 @@ def _preview_swatch(hex_color):
     """Return a small colored swatch string."""
     from homelab.ui import hex_to_ansi
     ansi = hex_to_ansi(hex_color)
-    return f"{ansi}\u2588\u2588\u2588\u2588{C.RESET}"
+    return f"{ansi}████{C.RESET}"
 
 
 def pick_theme():
@@ -71,7 +71,7 @@ def pick_theme():
     custom_swatch = _preview_swatch(current_color)
     custom_marker = " (current)" if current == "custom" else ""
     choices.append(f"{custom_swatch}  {'Custom':<16} Enter a hex color{custom_marker}")
-    choices.append("\u2190 Back")
+    choices.append("← Back")
 
     idx = pick_option("Choose a theme:", choices)
 

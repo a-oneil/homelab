@@ -101,7 +101,7 @@ class PlexPlugin(Plugin):
                     user = s.get("User", {}).get("title", "?")
                     title = s.get("grandparentTitle", s.get("title", "?"))
                     state = s.get("Player", {}).get("state", "?")
-                    icon = f"{C.GREEN}\u25b6{C.RESET}" if state == "playing" else f"{C.YELLOW}\u23f8{C.RESET}"
+                    icon = f"{C.GREEN}▶{C.RESET}" if state == "playing" else f"{C.YELLOW}⏸{C.RESET}"
                     lines.append(f"  {icon} {user}: {title}")
             else:
                 lines.append(f"{C.DIM}No active streams{C.RESET}")
@@ -118,7 +118,7 @@ class PlexPlugin(Plugin):
 
     def get_menu_items(self):
         return [
-            ("Plex                 \u2014 media, search, playlists, history", plex_menu),
+            ("Plex                 — media, search, playlists, history", plex_menu),
         ]
 
     def get_actions(self):
@@ -142,19 +142,19 @@ class PlexPlugin(Plugin):
 def plex_menu():
     while True:
         idx = pick_option("Plex:", [
-            "Now Playing          \u2014 active streams and sessions",
-            "Library Stats        \u2014 section counts and sizes",
-            "Recently Added       \u2014 latest additions to library",
-            "Search               \u2014 find media across all libraries",
-            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
-            "Library Browser      \u2014 navigate sections and folders",
-            "Playlists            \u2014 view and browse playlists",
-            "Watch History        \u2014 playback history and stats",
-            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
-            "Scan Libraries       \u2014 trigger library refresh",
-            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
-            "\u2605 Add to Favorites   \u2014 pin an action to the main menu",
-            "\u2190 Back",
+            "Now Playing          — active streams and sessions",
+            "Library Stats        — section counts and sizes",
+            "Recently Added       — latest additions to library",
+            "Search               — find media across all libraries",
+            "───────────────",
+            "Library Browser      — navigate sections and folders",
+            "Playlists            — view and browse playlists",
+            "Watch History        — playback history and stats",
+            "───────────────",
+            "Scan Libraries       — trigger library refresh",
+            "───────────────",
+            "★ Add to Favorites   — pin an action to the main menu",
+            "← Back",
         ])
         if idx == 12:
             return
@@ -230,13 +230,13 @@ def _now_playing():
             else:
                 pct_str = "?"
 
-            icon = f"{C.GREEN}\u25b6{C.RESET}" if state == "playing" else f"{C.YELLOW}\u23f8{C.RESET}"
+            icon = f"{C.GREEN}▶{C.RESET}" if state == "playing" else f"{C.YELLOW}⏸{C.RESET}"
             choices.append(f"{icon} {user:<15} {title:<35} {pct_str:>4}  {tc_str}  ({player})")
 
         session_count = len(choices)
-        choices.append("\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
-        choices.append("\u21bb Refresh")
-        choices.append("\u2190 Back")
+        choices.append("───────────────")
+        choices.append("↻ Refresh")
+        choices.append("← Back")
 
         idx = pick_option(f"Now Playing ({session_count}):", choices)
         if idx == session_count or idx == session_count + 1:
@@ -266,7 +266,7 @@ def _session_detail(session):
         print(f"  {C.BOLD}Video:{C.RESET}    {transcode.get('videoDecision', '?')}")
         print(f"  {C.BOLD}Audio:{C.RESET}    {transcode.get('audioDecision', '?')}")
 
-    aidx = pick_option(f"{user} \u2014 {title}:", ["Kill stream", "\u2190 Back"])
+    aidx = pick_option(f"{user} — {title}:", ["Kill stream", "← Back"])
     if aidx == 0:
         if not confirm(f"Kill stream for '{user}'?", default_yes=False):
             return
@@ -338,7 +338,7 @@ def _recently_added():
         title = item.get("title", "?")
         parent = item.get("grandparentTitle", item.get("parentTitle", ""))
         if parent:
-            display = f"{parent} \u2014 {title}"
+            display = f"{parent} — {title}"
         else:
             display = title
 
@@ -390,13 +390,13 @@ def _search():
             }.get(itype, itype)
 
             if parent:
-                display = f"{parent} \u2014 {title}"
+                display = f"{parent} — {title}"
             else:
                 display = title
             year_str = f" ({year})" if year else ""
             choices.append(f"[{type_label:<8}] {display}{year_str}")
 
-        choices.append("\u2190 Back")
+        choices.append("← Back")
         idx = pick_option(f"Search: '{term}' ({len(items)} results):", choices)
         if idx >= len(items) or idx == len(choices) - 1:
             return
@@ -477,7 +477,7 @@ def _library_browser():
             type_label = {"movie": "Movies", "show": "Shows", "artist": "Music", "photo": "Photos"}.get(stype, stype)
             choices.append(f"{title:<25} ({type_label})")
 
-        choices.append("\u2190 Back")
+        choices.append("← Back")
         idx = pick_option("Library Browser:", choices)
         if idx >= len(sections):
             return
@@ -520,16 +520,16 @@ def _browse_section(section):
             choices.append(f"{name}{year_str}  [{itype}]{view_str}")
 
         item_count = len(choices)
-        choices.append("\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
+        choices.append("───────────────")
 
         has_more = offset + page_size < total
         has_prev = offset > 0
         if has_prev:
-            choices.append("\u2190 Previous page")
+            choices.append("← Previous page")
         if has_more:
-            choices.append(f"\u2192 Next page ({offset + page_size + 1}-{min(offset + 2 * page_size, total)} of {total})")
+            choices.append(f"→ Next page ({offset + page_size + 1}-{min(offset + 2 * page_size, total)} of {total})")
 
-        choices.append("\u2190 Back")
+        choices.append("← Back")
 
         header = f"\n  {C.ACCENT}{C.BOLD}{title}{C.RESET}  {offset + 1}-{offset + len(items)} of {total}\n"
         idx = pick_option(f"{title}:", choices, header=header)
@@ -586,9 +586,9 @@ def _playlists():
             choices.append(f"{title:<30} {leaf_count:>4} items  {dur_str:>8}  [{pl_type}]")
 
         pl_count = len(choices)
-        choices.append("\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
-        choices.append("\u21bb Refresh")
-        choices.append("\u2190 Back")
+        choices.append("───────────────")
+        choices.append("↻ Refresh")
+        choices.append("← Back")
 
         idx = pick_option(f"Playlists ({pl_count}):", choices)
         if idx == pl_count + 2:
@@ -626,7 +626,7 @@ def _playlist_items(playlist):
         duration = item.get("duration", 0)
 
         if parent:
-            display = f"{parent} \u2014 {name}"
+            display = f"{parent} — {name}"
         else:
             display = name
 
@@ -680,7 +680,7 @@ def _watch_history():
         viewed_at = item.get("viewedAt", 0)
 
         if parent:
-            display = f"{parent} \u2014 {title}"
+            display = f"{parent} — {title}"
         else:
             display = title
 
@@ -747,11 +747,11 @@ def plex_scan():
         title = d.get("title", "?")
         key = d.get("key", "")
 
-        action_choices = ["Scan", "\u2605 Favorite", "\u2190 Back"]
+        action_choices = ["Scan", "★ Favorite", "← Back"]
         aidx = pick_option(f"Library: {title}", action_choices)
-        if action_choices[aidx] == "\u2190 Back":
+        if action_choices[aidx] == "← Back":
             return
-        elif action_choices[aidx] == "\u2605 Favorite":
+        elif action_choices[aidx] == "★ Favorite":
             from homelab.plugins import add_item_favorite
             add_item_favorite("plex_library", key, f"Plex: Scan {title}")
         elif action_choices[aidx] == "Scan":

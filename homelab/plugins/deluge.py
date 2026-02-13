@@ -84,7 +84,7 @@ def _format_size(size_bytes):
 def _format_eta(seconds):
     """Format seconds to human-readable ETA."""
     if not seconds or seconds < 0:
-        return "\u221e"
+        return "∞"
     if seconds >= 86400:
         return f"{int(seconds / 86400)}d {int((seconds % 86400) / 3600)}h"
     if seconds >= 3600:
@@ -105,7 +105,7 @@ def _fetch_deluge_stats():
         if torrents and isinstance(torrents.get("result"), dict):
             active = sum(1 for t in torrents["result"].values() if t.get("state") == "Downloading")
         if dl_rate > 1024:
-            _HEADER_CACHE["stats"] = f"Deluge: {_format_speed(dl_rate)} \u2193 {active} active"
+            _HEADER_CACHE["stats"] = f"Deluge: {_format_speed(dl_rate)} ↓ {active} active"
         elif active:
             _HEADER_CACHE["stats"] = f"Deluge: {active} active"
         else:
@@ -155,7 +155,7 @@ class DelugePlugin(Plugin):
                     seeding += 1
 
         if dl > 0 or ul > 0:
-            lines.append(f"{C.GREEN}{_format_speed(dl)} \u2193{C.RESET}  {C.CYAN}{_format_speed(ul)} \u2191{C.RESET}")
+            lines.append(f"{C.GREEN}{_format_speed(dl)} ↓{C.RESET}  {C.CYAN}{_format_speed(ul)} ↑{C.RESET}")
         if downloading or seeding:
             parts = []
             if downloading:
@@ -176,7 +176,7 @@ class DelugePlugin(Plugin):
 
     def get_menu_items(self):
         return [
-            ("Deluge               \u2014 torrents, stats, speed control", deluge_menu),
+            ("Deluge               — torrents, stats, speed control", deluge_menu),
         ]
 
     def get_actions(self):
@@ -191,14 +191,14 @@ class DelugePlugin(Plugin):
 def deluge_menu():
     while True:
         idx = pick_option("Deluge:", [
-            "Torrents             \u2014 active downloads with progress and speed",
-            "Transfer Stats       \u2014 DL/UL speed, ratio, active peers",
-            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
-            "Add URL / Magnet     \u2014 send a URL or magnet link",
-            "Upload .torrent File \u2014 upload from local machine",
-            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
-            "\u2605 Add to Favorites   \u2014 pin an action to the main menu",
-            "\u2190 Back",
+            "Torrents             — active downloads with progress and speed",
+            "Transfer Stats       — DL/UL speed, ratio, active peers",
+            "───────────────",
+            "Add URL / Magnet     — send a URL or magnet link",
+            "Upload .torrent File — upload from local machine",
+            "───────────────",
+            "★ Add to Favorites   — pin an action to the main menu",
+            "← Back",
         ])
         if idx == 7:
             return
@@ -276,24 +276,24 @@ def _torrent_list():
 
             # State icon/color
             if state == "Downloading":
-                icon = f"{C.CYAN}\u25cf{C.RESET}"
+                icon = f"{C.CYAN}●{C.RESET}"
             elif state == "Seeding":
-                icon = f"{C.GREEN}\u25cf{C.RESET}"
+                icon = f"{C.GREEN}●{C.RESET}"
             elif state == "Paused":
-                icon = f"{C.YELLOW}\u25cf{C.RESET}"
+                icon = f"{C.YELLOW}●{C.RESET}"
             elif state == "Error":
-                icon = f"{C.RED}\u25cf{C.RESET}"
+                icon = f"{C.RED}●{C.RESET}"
             else:
-                icon = f"{C.DIM}\u25cf{C.RESET}"
+                icon = f"{C.DIM}●{C.RESET}"
 
             display_name = name[:35] if len(name) > 35 else name
 
             # Build info string
             parts = [f"[{progress:.1f}%]"]
             if dl_rate > 0:
-                parts.append(f"{_format_speed(dl_rate)} \u2193")
+                parts.append(f"{_format_speed(dl_rate)} ↓")
             if ul_rate > 0:
-                parts.append(f"{_format_speed(ul_rate)} \u2191")
+                parts.append(f"{_format_speed(ul_rate)} ↑")
             if state == "Downloading" and eta and eta > 0:
                 parts.append(f"ETA {_format_eta(eta)}")
 
@@ -302,9 +302,9 @@ def _torrent_list():
             torrent_ids.append(tid)
 
         torrent_count = len(choices)
-        choices.append("\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
-        choices.append("\u21bb Refresh")
-        choices.append("\u2190 Back")
+        choices.append("───────────────")
+        choices.append("↻ Refresh")
+        choices.append("← Back")
 
         idx = pick_option("Torrents:", choices, header=header)
         if idx == torrent_count + 2:
@@ -334,16 +334,16 @@ def _torrent_actions(torrent_id, torrent):
     print(f"  {C.BOLD}Ratio:{C.RESET}    {ratio:.2f}")
     print(f"  {C.BOLD}Seeds:{C.RESET}    {seeds}   {C.BOLD}Peers:{C.RESET} {peers}")
     if dl_rate > 0 or ul_rate > 0:
-        print(f"  {C.BOLD}Speed:{C.RESET}    {_format_speed(dl_rate)} \u2193  {_format_speed(ul_rate)} \u2191")
+        print(f"  {C.BOLD}Speed:{C.RESET}    {_format_speed(dl_rate)} ↓  {_format_speed(ul_rate)} ↑")
 
     is_paused = state == "Paused"
     toggle_label = "Resume" if is_paused else "Pause"
     aidx = pick_option(f"{name[:50]}:", [
-        f"{toggle_label}               \u2014 {'resume' if is_paused else 'pause'} this torrent",
-        "Remove (keep data)   \u2014 remove torrent, keep files",
-        "Remove (delete data) \u2014 remove torrent and files",
-        "Force Recheck        \u2014 verify downloaded data",
-        "\u2190 Back",
+        f"{toggle_label}               — {'resume' if is_paused else 'pause'} this torrent",
+        "Remove (keep data)   — remove torrent, keep files",
+        "Remove (delete data) — remove torrent and files",
+        "Force Recheck        — verify downloaded data",
+        "← Back",
     ])
     if aidx == 4:
         return
@@ -417,10 +417,10 @@ def _transfer_stats():
     print(f"  {C.BOLD}UL Limit:{C.RESET}    {ul_limit_str}")
 
     aidx = pick_option("Speed Control:", [
-        "Set Download Limit   \u2014 cap download speed",
-        "Set Upload Limit     \u2014 cap upload speed",
-        "Remove All Limits    \u2014 set unlimited",
-        "\u2190 Back",
+        "Set Download Limit   — cap download speed",
+        "Set Upload Limit     — cap upload speed",
+        "Remove All Limits    — set unlimited",
+        "← Back",
     ])
     if aidx == 3:
         return

@@ -33,6 +33,7 @@ from homelab.plugins.lidarr import LidarrPlugin
 from homelab.plugins.speedtest import SpeedtestPlugin
 from homelab.plugins.dockerhost import DockerHostPlugin
 from homelab.plugins.ansible import AnsiblePlugin
+from homelab.plugins.localhost import LocalhostPlugin
 
 # ─── Plugin Registry ───────────────────────────────────────────────────────
 
@@ -59,6 +60,7 @@ PLUGINS = [
     SpeedtestPlugin(),
     DockerHostPlugin(),
     AnsiblePlugin(),
+    LocalhostPlugin(),
 ]
 
 
@@ -337,8 +339,8 @@ def edit_settings(all_actions):
             ("Import Config", "__import_config", None, False),
         ]
 
-        # Add plugin config fields (grouped by service)
-        for plugin in PLUGINS:
+        # Add plugin config fields (grouped by service, sorted alphabetically)
+        for plugin in sorted(PLUGINS, key=lambda p: p.name.lower()):
             fields = plugin.get_config_fields()
             if fields:
                 settings_items.append((" ", "__spacer", None, False))

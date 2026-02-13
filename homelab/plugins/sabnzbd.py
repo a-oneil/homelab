@@ -61,7 +61,7 @@ def _fetch_sabnzbd_stats():
         if status == "Paused":
             _HEADER_CACHE["stats"] = "SABnzbd: paused"
         elif noofslots > 0 and speed != "0":
-            _HEADER_CACHE["stats"] = f"SABnzbd: {speed}/s \u2193 {noofslots} queued"
+            _HEADER_CACHE["stats"] = f"SABnzbd: {speed}/s ↓ {noofslots} queued"
         else:
             _HEADER_CACHE["stats"] = "SABnzbd: idle"
     _HEADER_CACHE["timestamp"] = time.time()
@@ -111,7 +111,7 @@ class SabnzbdPlugin(Plugin):
         if status == "Paused":
             lines.append(f"{C.YELLOW}Paused{C.RESET}  {noofslots} in queue")
         elif noofslots > 0:
-            lines.append(f"{C.GREEN}{speed}/s \u2193{C.RESET}  {noofslots} in queue  {sizeleft} left")
+            lines.append(f"{C.GREEN}{speed}/s ↓{C.RESET}  {noofslots} in queue  {sizeleft} left")
         else:
             lines.append(f"{C.DIM}Idle — queue empty{C.RESET}")
 
@@ -132,7 +132,7 @@ class SabnzbdPlugin(Plugin):
 
     def get_menu_items(self):
         return [
-            ("SABnzbd              \u2014 downloads, queue, history, stats", sabnzbd_menu),
+            ("SABnzbd              — downloads, queue, history, stats", sabnzbd_menu),
         ]
 
     def get_actions(self):
@@ -148,15 +148,15 @@ class SabnzbdPlugin(Plugin):
 def sabnzbd_menu():
     while True:
         idx = pick_option("SABnzbd:", [
-            "Queue & Downloads    \u2014 view queue, pause/resume, reprioritize",
-            "History              \u2014 completed and failed downloads",
-            "Server Stats         \u2014 speed, disk space, status",
-            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
-            "Add URL              \u2014 send a URL or NZB link",
-            "Upload .nzb File     \u2014 upload from local machine",
-            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
-            "\u2605 Add to Favorites   \u2014 pin an action to the main menu",
-            "\u2190 Back",
+            "Queue & Downloads    — view queue, pause/resume, reprioritize",
+            "History              — completed and failed downloads",
+            "Server Stats         — speed, disk space, status",
+            "───────────────",
+            "Add URL              — send a URL or NZB link",
+            "Upload .nzb File     — upload from local machine",
+            "───────────────",
+            "★ Add to Favorites   — pin an action to the main menu",
+            "← Back",
         ])
         if idx == 8:
             return
@@ -193,7 +193,7 @@ def _queue_manager():
         paused = status == "Paused"
 
         # Build header
-        pause_label = f"{C.YELLOW}PAUSED{C.RESET}" if paused else f"{C.GREEN}{speed}/s \u2193{C.RESET}"
+        pause_label = f"{C.YELLOW}PAUSED{C.RESET}" if paused else f"{C.GREEN}{speed}/s ↓{C.RESET}"
         header = (
             f"\n  {C.ACCENT}{C.BOLD}Download Queue{C.RESET}"
             f"  {len(slots)} items  |  {pause_label}\n"
@@ -202,12 +202,12 @@ def _queue_manager():
         choices = []
         # Global toggle at top
         if paused:
-            choices.append(f"{C.GREEN}\u25b6 Resume Queue{C.RESET}")
+            choices.append(f"{C.GREEN}▶ Resume Queue{C.RESET}")
         else:
-            choices.append(f"{C.YELLOW}\u23f8 Pause Queue{C.RESET}")
+            choices.append(f"{C.YELLOW}⏸ Pause Queue{C.RESET}")
 
-        choices.append("Speed Limit          \u2014 set download speed cap")
-        choices.append("\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
+        choices.append("Speed Limit          — set download speed cap")
+        choices.append("───────────────")
 
         for slot in slots:
             name = slot.get("filename", "?")
@@ -217,19 +217,19 @@ def _queue_manager():
             slot_status = slot.get("status", "?")
 
             if slot_status == "Downloading":
-                icon = f"{C.GREEN}\u25cf{C.RESET}"
+                icon = f"{C.GREEN}●{C.RESET}"
             elif slot_status == "Paused":
-                icon = f"{C.YELLOW}\u25cf{C.RESET}"
+                icon = f"{C.YELLOW}●{C.RESET}"
             else:
-                icon = f"{C.DIM}\u25cf{C.RESET}"
+                icon = f"{C.DIM}●{C.RESET}"
 
             display_name = name[:40] if len(name) > 40 else name
             choices.append(f"{icon} {display_name:<40} [{pct:>3}%]  {size:>8}  ETA {timeleft}")
 
         slot_count = len(slots)
-        choices.append("\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
-        choices.append("\u21bb Refresh")
-        choices.append("\u2190 Back")
+        choices.append("───────────────")
+        choices.append("↻ Refresh")
+        choices.append("← Back")
 
         idx = pick_option("Queue:", choices, header=header)
 
@@ -283,10 +283,10 @@ def _queue_item_actions(slot):
     is_paused = slot_status == "Paused"
     toggle_label = "Resume" if is_paused else "Pause"
     aidx = pick_option(f"{name[:50]}:", [
-        f"{toggle_label}               \u2014 {'resume' if is_paused else 'pause'} this download",
-        "Remove               \u2014 delete from queue",
-        "Change Priority      \u2014 set High / Normal / Low / Force",
-        "\u2190 Back",
+        f"{toggle_label}               — {'resume' if is_paused else 'pause'} this download",
+        "Remove               — delete from queue",
+        "Change Priority      — set High / Normal / Low / Force",
+        "← Back",
     ])
     if aidx == 3:
         return
@@ -305,7 +305,7 @@ def _queue_item_actions(slot):
             success(f"Removed: {name[:50]}")
             log_action("SABnzbd Remove", name[:60])
     elif aidx == 2:
-        pidx = pick_option("Priority:", ["Force", "High", "Normal", "Low", "\u2190 Back"])
+        pidx = pick_option("Priority:", ["Force", "High", "Normal", "Low", "← Back"])
         pri_values = {"Force": "2", "High": "1", "Normal": "0", "Low": "-1"}
         pri_names = ["Force", "High", "Normal", "Low"]
         if pidx < 4:
@@ -330,7 +330,7 @@ def _speed_limit():
         "50%",
         "25%",
         "Custom",
-        "\u2190 Back",
+        "← Back",
     ])
     if idx == 5:
         return
@@ -387,19 +387,19 @@ def _history():
                 time_str = "?"
 
             if status == "Completed":
-                icon = f"{C.GREEN}\u2713{C.RESET}"
+                icon = f"{C.GREEN}✓{C.RESET}"
             elif status == "Failed":
-                icon = f"{C.RED}\u2717{C.RESET}"
+                icon = f"{C.RED}✗{C.RESET}"
             else:
-                icon = f"{C.YELLOW}\u25cf{C.RESET}"
+                icon = f"{C.YELLOW}●{C.RESET}"
 
             display_name = name[:45] if len(name) > 45 else name
             choices.append(f"{icon} {display_name:<45} {size:>8}  {time_str:>10}")
 
         slot_count = len(choices)
-        choices.append("\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
-        choices.append("\u21bb Refresh")
-        choices.append("\u2190 Back")
+        choices.append("───────────────")
+        choices.append("↻ Refresh")
+        choices.append("← Back")
 
         idx = pick_option(f"History ({slot_count}):", choices)
         if idx == slot_count + 2:
@@ -438,7 +438,7 @@ def _history_detail(slot):
             for action in actions[:3]:
                 print(f"  {C.DIM}  {stage_name}: {action}{C.RESET}")
 
-    aidx = pick_option(f"{name[:50]}:", ["Delete from history", "\u2190 Back"])
+    aidx = pick_option(f"{name[:50]}:", ["Delete from history", "← Back"])
     if aidx == 0:
         if confirm(f"Delete '{name[:50]}' from history?", default_yes=False):
             _api_raw("history", f"name=delete&value={nzo_id}")

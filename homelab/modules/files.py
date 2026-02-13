@@ -21,7 +21,6 @@ from homelab.modules.transport import (
 from homelab.modules.auditlog import log_action
 from homelab.history import log_transfer
 from homelab.notifications import notify, copy_to_clipboard
-
 # ─── Text file extensions for preview/edit detection ────────────────────────
 
 TEXT_EXT = (
@@ -458,6 +457,7 @@ def upload_local(host, base_path, extra_paths=None, port=None):
         notify("Homelab", f"Upload complete: {name}")
         log_action("File Upload", f"{name} → {host}:{remote_path}")
         log_transfer("upload", "rsync", local_path, remote_path, 1)
+    input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
 
 
 # ─── 3. Queue Download ─────────────────────────────────────────────────────
@@ -596,6 +596,7 @@ def manage_files(host, base_path, extra_paths=None, trash_path=None, port=None):
                     "Search by file type",
                     "Find duplicates",
                     "Calculate size",
+                    "Folder tree",
                     "Compress (tar.gz)",
                     "Multi-select",
                     "Rename", "Move", "Copy", "Delete", "Cancel",
@@ -616,6 +617,8 @@ def manage_files(host, base_path, extra_paths=None, trash_path=None, port=None):
                     _find_duplicates_in(full_path, host, port=port)
                 elif al == "Calculate size":
                     _folder_size(full_path, host, port=port)
+                elif al == "Folder tree":
+                    _folder_tree(full_path, host, port=port)
                 elif al == "Compress (tar.gz)":
                     _compress_on_server(full_path, host, is_dir=True, port=port)
                 elif al == "Multi-select":
@@ -738,16 +741,121 @@ def _rename_remote(parent_path, old_name, host, port=None):
 
 
 def _move_remote(source_path, host, base_path, extra_paths=None, port=None):
-    print(f"\n  {C.BOLD}Moving:{C.RESET} {source_path}")
+    name = os.path.basename(source_path)
+    is_dir = False
+    check = ssh_run(f"test -d '{source_path}'", host=host, port=port)
+    if check.returncode == 0:
+        is_dir = True
+
+    new_name = None
+    sync_contents = False
+    mode_hint = "File moved to destination"
+
+    # For directories, choose transfer mode (+ optional rename)
+    if is_dir:
+        mode_opts = [
+            f"Contents — merge files inside {name}/ into destination",
+            f"Folder   — move {name}/ itself as a subfolder",
+            "Rename   — move with a different folder name",
+            "Back",
+        ]
+        mode_idx = pick_option("Move mode:", mode_opts)
+        if mode_idx == 3:
+            return
+        if mode_idx == 2:
+            new_name = prompt_text(f"New name (blank to keep '{name}'):")
+            if not new_name:
+                new_name = None
+            sync_contents = True
+        else:
+            sync_contents = (mode_idx == 0)
+
     info("Select destination folder:")
     dest = browse_remote_folder(host, base_path, extra_paths, port=port)
-    name = os.path.basename(source_path)
-    result = ssh_run(f"mv '{source_path}' '{dest}/{name}'", host=host, port=port)
-    if result.returncode != 0:
-        error(f"Failed: {result.stderr.strip()}")
+    if not dest:
+        return
+
+    # Build rsync source/dest paths
+    display_name = new_name or name
+    if is_dir and sync_contents:
+        rsync_src = source_path + "/"
+        rsync_dest = f"{dest}/{new_name}/" if new_name else f"{dest}/"
+        if new_name:
+            mode_hint = f"Contents of {name}/ moved into {dest}/{new_name}/"
+        else:
+            mode_hint = f"Contents of {name}/ merged into destination"
+    elif is_dir:
+        rsync_src = source_path
+        rsync_dest = f"{dest}/"
+        mode_hint = f"Folder {name}/ moved as subfolder"
     else:
-        log_action("File Move", f"{host}:{source_path} → {dest}/{name}")
-        success(f"Moved to: {dest}/{name}")
+        rsync_src = source_path
+        rsync_dest = f"{dest}/"
+        mode_hint = f"File moved to {dest}/{name}"
+
+    # Rsync option picker (--remove-source-files pre-selected for moves)
+    extra_args = pick_rsync_options(
+        source=rsync_src, dest=rsync_dest,
+        preselected={"--remove-source-files"},
+    )
+
+    # Disk space check
+    if not _check_disk_space(dest, host=host):
+        warn("Aborted.")
+        return
+
+    # Get size for summary
+    size_result = ssh_run(f"du -sh '{source_path}' 2>/dev/null", host=host, port=port)
+    size_str = ""
+    if size_result.returncode == 0 and size_result.stdout.strip():
+        size_str = size_result.stdout.strip().split()[0]
+
+    remove_source = "--remove-source-files" in (extra_args or [])
+    action_word = "Move" if remove_source else "Copy"
+
+    # Confirmation summary
+    clear_screen()
+    print(f"\n  {C.BOLD}{action_word}:{C.RESET}  {display_name}")
+    print(f"  {C.BOLD}From:{C.RESET}   {C.ACCENT}{source_path}{C.RESET}")
+    print(f"  {C.BOLD}To:{C.RESET}     {C.ACCENT}{host}:{rsync_dest}{C.RESET}")
+    print(f"  {C.BOLD}Mode:{C.RESET}   {C.DIM}{mode_hint}{C.RESET}")
+    if size_str:
+        print(f"  {C.BOLD}Size:{C.RESET}   {size_str}")
+    if extra_args:
+        print(f"  {C.BOLD}Opts:{C.RESET}   {C.DIM}{' '.join(extra_args)}{C.RESET}")
+
+    if not confirm("Proceed?"):
+        warn("Aborted.")
+        return
+
+    # Build full rsync command to run on the server
+    rsync_cmd = "rsync -ah --progress --stats"
+    if extra_args:
+        rsync_cmd += " " + " ".join(f"'{a}'" for a in extra_args)
+    rsync_cmd += f" '{rsync_src}' '{rsync_dest}'"
+
+    # Run rsync on the server via SSH with raw output
+    ssh_cmd = ["ssh"]
+    if port:
+        ssh_cmd.extend(["-p", str(port)])
+    ssh_cmd.extend([host, rsync_cmd])
+
+    start = time.time()
+    proc = subprocess.run(ssh_cmd)
+    elapsed = time.time() - start
+
+    if proc.returncode != 0:
+        error(f"{action_word} failed.")
+        notify("Homelab", f"{action_word} failed: {display_name}")
+    else:
+        # Clean up empty directories left by --remove-source-files
+        if is_dir and remove_source:
+            ssh_run(f"find '{source_path}' -type d -empty -delete 2>/dev/null", host=host, port=port)
+        log_action(f"File {action_word}", f"{host}:{source_path} → {dest}/{display_name}")
+        log_transfer("move", "rsync", source_path, f"{dest}/{display_name}", 1)
+        success(f"{action_word}: {display_name} ({elapsed:.1f}s)")
+        notify("Homelab", f"{action_word} complete: {display_name}")
+    input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
 
 
 def _batch_rename(current_dir, host, port=None):
@@ -812,6 +920,27 @@ def _folder_size(remote_path, host, port=None):
         size = result.stdout.strip().split("\t")[0]
         success(f"{name}: {size}")
     input("\n  Press Enter to continue...")
+
+
+def _folder_tree(remote_path, host, port=None):
+    """Display a tree view of a remote folder using a pager."""
+    name = os.path.basename(remote_path)
+    # Try `tree` first, fall back to `find` formatted as a tree
+    result = ssh_run(f"tree -a --dirsfirst -L 4 '{remote_path}' 2>/dev/null", host=host, port=port)
+    if result.returncode != 0 or not result.stdout.strip():
+        result = ssh_run(
+            f"find '{remote_path}' -maxdepth 4 | sort | sed 's|{remote_path}||;s|/[^/]*$|  |g;s|[^ ] |├── |'",
+            host=host, port=port,
+        )
+    if result.returncode != 0 or not result.stdout.strip():
+        error("Could not generate folder tree.")
+        input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
+        return
+    clear_screen()
+    print(f"\n  {C.BOLD}Tree: {name}/{C.RESET}\n")
+    for line in result.stdout.strip().splitlines():
+        print(f"  {line}")
+    input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
 
 
 def _multi_select_operations(current_dir, all_items, host, base_path, extra_paths=None, trash_path=None, port=None):
@@ -1318,6 +1447,7 @@ def _download_from_server(remote_path, host, is_dir=False, port=None):
         notify("Homelab", f"Download complete: {name}")
         log_action("File Download", f"{host}:{remote_path} → {dest}")
         log_transfer("download", "rsync", remote_path, dest, 1)
+    input(f"\n  {C.DIM}Press Enter to continue...{C.RESET}")
 
 
 # ─── Search (integrated into file manager) ─────────────────────────────────
