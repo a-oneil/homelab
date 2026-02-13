@@ -1,6 +1,6 @@
 """Cross-platform secret storage using Fernet symmetric encryption.
 
-Secrets are encrypted with a key stored in ~/.homelab.key (mode 0600).
+Secrets are encrypted with a key stored in ~/.homelab/encryption.key (mode 0600).
 The key file is auto-generated on first use. The config file stores
 encrypted values with a sentinel prefix so they can be identified.
 
@@ -11,7 +11,8 @@ import base64
 import os
 import stat
 
-_KEY_PATH = os.path.expanduser("~/.homelab.key")
+_HOMELAB_DIR = os.path.expanduser("~/.homelab")
+_KEY_PATH = os.path.join(_HOMELAB_DIR, "encryption.key")
 _FERNET = None  # Lazy-loaded
 
 
@@ -31,6 +32,7 @@ def _get_fernet():
             key = f.read().strip()
     else:
         key = Fernet.generate_key()
+        os.makedirs(_HOMELAB_DIR, exist_ok=True)
         # Write key with restricted permissions
         fd = os.open(_KEY_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:

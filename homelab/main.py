@@ -10,6 +10,7 @@ from homelab.config import CFG, CONFIG_PATH, HISTORY_PATH, save_config
 from homelab.ui import C, pick_option, success, warn, prompt_text
 from homelab.modules.files import show_history, manage_bookmarks
 from homelab.modules.auditlog import log_action
+from homelab.modules.healthmonitor import refresh_health_alerts, get_health_alerts
 from homelab.plugins.unraid import UnraidPlugin
 from homelab.plugins.proxmox import ProxmoxPlugin
 from homelab.plugins.unifi import UnifiPlugin
@@ -447,7 +448,7 @@ _homelab() {
 _homelab "$@"
 """)
 
-    bash_file = os.path.expanduser("~/.homelab_bash_completion")
+    bash_file = os.path.join(os.path.expanduser("~/.homelab"), "bash_completion")
     with open(bash_file, "w") as f:
         f.write("""_homelab_completions() {
     local opts="--install-completions --history --dashboard --dry-run --help"
@@ -461,12 +462,13 @@ complete -F _homelab_completions homelab
     print("    fpath=(~/.zfunc $fpath)")
     print("    autoload -Uz compinit && compinit")
     print(f"\n  {C.BOLD}For bash:{C.RESET} add to {C.ACCENT}~/.bashrc{C.RESET} or {C.ACCENT}~/.bash_profile{C.RESET}:")
-    print("    source ~/.homelab_bash_completion")
+    print("    source ~/.homelab/bash_completion")
     print(f"\n  Then restart your shell or run: {C.ACCENT}source ~/.zshrc{C.RESET}")
 
 
 # ─── Header ────────────────────────────────────────────────────────────────
 
+_HEADER_CACHE_FILE = os.path.join(os.path.expanduser("~/.homelab"), "header_cache.json")
 _HEADER_STATS_CACHE = {"alerts": [], "plugin_stats": []}
 _HEADER_REFRESH_LOCK = threading.Lock()
 _REFRESH_IN_PROGRESS = threading.Event()
@@ -474,6 +476,30 @@ _REFRESH_IN_PROGRESS = threading.Event()
 
 _PLUGIN_TIMEOUT = 8   # seconds per plugin before skipping
 _TOTAL_TIMEOUT = 15   # max seconds for entire header refresh
+
+
+def _load_header_cache():
+    """Load cached plugin stats from disk so the header is populated immediately."""
+    try:
+        import json
+        with open(_HEADER_CACHE_FILE, "r") as f:
+            data = json.load(f)
+        with _HEADER_REFRESH_LOCK:
+            _HEADER_STATS_CACHE["plugin_stats"] = data.get("plugin_stats", [])
+    except Exception:
+        pass
+
+
+def _save_header_cache():
+    """Persist plugin stats to disk for next launch."""
+    try:
+        import json
+        with _HEADER_REFRESH_LOCK:
+            data = {"plugin_stats": list(_HEADER_STATS_CACHE["plugin_stats"])}
+        with open(_HEADER_CACHE_FILE, "w") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
 
 
 def _collect_plugin_data(plugin):
@@ -494,6 +520,19 @@ def _collect_plugin_data(plugin):
     except Exception:
         pass
     return result
+
+
+def _collect_health_alerts():
+    """Collect health monitor alerts (runs in thread pool)."""
+    from homelab.ui import suppress_output
+    suppress_output(True)
+    try:
+        unraid_host = CFG.get("unraid_ssh_host", "")
+        if unraid_host:
+            refresh_health_alerts(host=unraid_host)
+        return get_health_alerts(PLUGINS) or []
+    except Exception:
+        return []
 
 
 def _test_ssh_hosts():
@@ -541,28 +580,21 @@ def _refresh_header_data():
     try:
         from concurrent.futures import as_completed
 
+        # Build into local lists, then swap — old cache stays visible until done
         alerts = []
-
-        # Test SSH connectivity — show alerts for unreachable hosts
-        alerts.extend(_test_ssh_hosts())
-
-        try:
-            from homelab.modules.healthmonitor import refresh_health_alerts
-            # Check SSH health for the Unraid host if configured
-            unraid_host = CFG.get("unraid_ssh_host", "")
-            if unraid_host:
-                refresh_health_alerts(host=unraid_host)
-            from homelab.modules.healthmonitor import get_health_alerts
-            alerts.extend(get_health_alerts(PLUGINS))
-        except Exception:
-            pass
-
         stats = []
+
         configured = [p for p in PLUGINS if p.is_configured()]
-        if configured:
-            with ThreadPoolExecutor(max_workers=len(configured)) as pool:
-                futures = {pool.submit(_collect_plugin_data, p): p for p in configured}
-                for future in as_completed(futures, timeout=_TOTAL_TIMEOUT):
+        workers = max(len(configured) + 2, 4)  # plugins + SSH test + health
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            # Submit SSH test and health check alongside plugins
+            ssh_future = pool.submit(_test_ssh_hosts)
+            health_future = pool.submit(_collect_health_alerts)
+            plugin_futures = {pool.submit(_collect_plugin_data, p): p for p in configured}
+
+            # Collect plugin results as they complete
+            if plugin_futures:
+                for future in as_completed(plugin_futures, timeout=_TOTAL_TIMEOUT):
                     try:
                         result = future.result(timeout=0)
                         if result["alerts"]:
@@ -572,9 +604,27 @@ def _refresh_header_data():
                     except Exception:
                         pass  # Skip broken plugins
 
+            # Health alerts after plugins
+            try:
+                health_alerts = health_future.result(timeout=_TOTAL_TIMEOUT)
+                if health_alerts:
+                    alerts.extend(health_alerts)
+            except Exception:
+                pass
+
+            # SSH alerts last (slowest — tests each host)
+            try:
+                ssh_alerts = ssh_future.result(timeout=_TOTAL_TIMEOUT)
+                if ssh_alerts:
+                    alerts.extend(ssh_alerts)
+            except Exception:
+                pass
+
+        # Swap in new data all at once
         with _HEADER_REFRESH_LOCK:
             _HEADER_STATS_CACHE["alerts"] = alerts
             _HEADER_STATS_CACHE["plugin_stats"] = stats
+        _save_header_cache()
     except Exception:
         pass  # Never let header refresh crash the app
     finally:
@@ -809,7 +859,8 @@ def main():
         print(f"  {C.BOLD}History:{C.RESET} {HISTORY_PATH}\n")
         return
 
-    # Kick off header data refresh in background so startup is never blocked
+    # Load cached header stats from last session, then refresh in background
+    _load_header_cache()
     _schedule_header_refresh()
 
     # Start scheduled tasks if any are configured

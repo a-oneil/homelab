@@ -60,7 +60,7 @@ def _run_task(task):
         elif task_type == "backup_config":
             import json
             import os
-            backup_dir = os.path.expanduser("~/.homelab_backups")
+            backup_dir = os.path.join(os.path.expanduser("~/.homelab"), "backups")
             os.makedirs(backup_dir, exist_ok=True)
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             backup_path = os.path.join(backup_dir, f"homelabrc_{stamp}.json")

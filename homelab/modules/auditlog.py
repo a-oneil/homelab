@@ -6,7 +6,7 @@ import time
 
 from homelab.ui import C, pick_option, prompt_text
 
-AUDIT_PATH = os.path.expanduser("~/.homelab_audit.json")
+AUDIT_PATH = os.path.join(os.path.expanduser("~/.homelab"), "audit.json")
 _MAX_ENTRIES = 500
 
 

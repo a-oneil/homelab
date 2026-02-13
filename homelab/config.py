@@ -8,8 +8,9 @@ import subprocess
 
 from homelab import keychain
 
-CONFIG_PATH = os.path.expanduser("~/.homelabrc")
-HISTORY_PATH = os.path.expanduser("~/.homelab_history.json")
+HOMELAB_DIR = os.path.expanduser("~/.homelab")
+CONFIG_PATH = os.path.join(HOMELAB_DIR, "config.json")
+HISTORY_PATH = os.path.join(HOMELAB_DIR, "history.json")
 
 _ENC_PREFIX = "enc:"
 
@@ -155,7 +156,43 @@ def _migrate_legacy():
         shutil.copy2(_LEGACY_HISTORY, HISTORY_PATH)
 
 
+def _migrate_dotfiles():
+    """Move old dotfiles into ~/.homelab/ with correct names."""
+    moves = [
+        (".homelabrc", "config.json"),
+        (".homelab_history.json", "history.json"),
+        (".homelab.key", "encryption.key"),
+        (".homelab_audit.json", "audit.json"),
+        (".homelab_header_cache.json", "header_cache.json"),
+        (".homelab_bash_completion", "bash_completion"),
+    ]
+    for old_name, new_name in moves:
+        new = os.path.join(HOMELAB_DIR, new_name)
+        if os.path.exists(new):
+            continue
+        # Check inside ~/.homelab/ first (moved but not renamed)
+        old_inside = os.path.join(HOMELAB_DIR, old_name)
+        if os.path.exists(old_inside):
+            shutil.move(old_inside, new)
+            continue
+        # Check home directory (never moved)
+        old_home = os.path.expanduser(os.path.join("~", old_name))
+        if os.path.exists(old_home):
+            shutil.move(old_home, new)
+    # Move backups directory
+    for old_dir in [
+        os.path.join(HOMELAB_DIR, ".homelab_backups"),
+        os.path.expanduser("~/.homelab_backups"),
+    ]:
+        new_backups = os.path.join(HOMELAB_DIR, "backups")
+        if os.path.isdir(old_dir) and not os.path.exists(new_backups):
+            shutil.move(old_dir, new_backups)
+            break
+
+
 def load_config():
+    os.makedirs(HOMELAB_DIR, exist_ok=True)
+    _migrate_dotfiles()
     _migrate_legacy()
     if os.path.exists(CONFIG_PATH):
         with open(CONFIG_PATH, "r") as f:
