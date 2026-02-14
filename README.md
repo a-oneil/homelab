@@ -8,7 +8,7 @@ Browse and transfer files over SSH, manage Docker containers across multiple ser
 
 ## Disclaimer
 
-This project was vibe coded with [Claude Code](https://claude.ai/code). Although I have extensively tested this tool within my homelab, please review the code before blindly executing code.
+This project was vibe coded with [Claude Code](https://claude.ai/code). Although I have extensively tested this tool within my homelab, please review before blindly executing code.
 
 ## Features
 
@@ -24,7 +24,8 @@ This project was vibe coded with [Claude Code](https://claude.ai/code). Although
 - **Bookmarks** — save and jump to frequently used folders
 - **Trash** — soft-delete with restore (sidecar `.origin` files track original paths)
 
-### Service Plugins (22)
+### Service Plugins (23)
+- **Localhost** — local file manager (browse, rename, move, copy, delete, preview, edit, search, duplicates, batch rename, trash), system info, resource monitor (live CPU/RAM/disk/network trends), process manager, network tools (interfaces, connections, DNS, port check), disk usage analyzer, local Docker management (containers, compose, stats, resource graphs, images, prune), service manager (systemd/launchctl)
 - **Unraid** — dashboard (disk usage, CPU, RAM, SMART), Docker management (containers, compose, bulk operations, stats, resource graphs, image management, system prune, per-container update), VMs (virsh start/stop/restart/snapshot), parity check, notification center, user scripts, live logs (syslog + container + multi-container)
 - **Docker Servers** — manage any Linux server with Docker over SSH. Per-server: containers (start/stop/restart/shell/logs/inspect/update), compose (up/down/pull & up/edit/validate/restart service), bulk operations, docker stats, resource graphs, image management, system prune, container update checks, file browser, system stats, live logs (including multi-container + search)
 - **Proxmox** — QEMU VMs and LXC containers (start, stop, reboot, snapshot), resource usage with bar charts, console access (SSH/noVNC)
@@ -131,6 +132,13 @@ ssh-copy-id root@your-server-ip
 Or use the built-in **SSH Key Manager** (Settings > SSH Keys) to generate and deploy keys.
 
 ## Plugin Configuration
+
+### Localhost
+No configuration needed — always available. Optionally install `psutil` for system tools (CPU, memory, disk, process manager, network tools):
+```bash
+pip install psutil
+```
+Docker management appears automatically if Docker is installed locally. Service manager supports systemd (Linux) and launchctl (macOS).
 
 ### Unraid
 Set SSH Host and Remote Base in Settings. Optionally configure:
@@ -261,6 +269,7 @@ homelab/
 │   └── volumes.py        # Volume management
 └── plugins/
     ├── __init__.py       # Plugin base class
+    ├── localhost.py      # Localhost (local files, system tools, Docker, services)
     ├── unraid.py         # Unraid (dashboard, Docker, VMs, parity, scripts, logs)
     ├── dockerhost.py     # Docker Servers (multi-server Docker management)
     ├── proxmox.py        # Proxmox (VMs, LXC, resources)
